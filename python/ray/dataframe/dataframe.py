@@ -30,18 +30,29 @@ from .groupby import DataFrameGroupBy
 
 class DataFrame(object):
 
-    def __init__(self, df, columns, index=None):
+    def __init__(self, data=None, index=None, columns=None, dtype=None,
+                 copy=False, cols=None, rows=None):
         """Distributed DataFrame object backed by Pandas dataframes.
 
         Args:
-            df ([ObjectID]): The list of ObjectIDs that contain the dataframe
-                partitions.
+            data (numpy ndarray (structured or homogeneous) or dict):
+                Dict can contain Series, arrays, constants, or list-like
+                objects.
+            index (pandas.Index or list): The row index for this dataframe.
             columns (pandas.Index): The column names for this dataframe, in
                 pandas Index object.
-            index (pandas.Index or list): The row index for this dataframe.
+            dtype : Data type to force. Only a single dtype is allowed.
+                If None, infer
+            copy (boolean): Copy data from inputs.
+                Only affects DataFrame / 2d ndarray input
+            cols ([ObjectID]): The list of ObjectIDs that contain the column
+                dataframe partitions.
+            rows ([ObjectID]): The list of ObjectIDs that contain the row
+                dataframe partitions.
         """
+        # Check type of data and use appropriate constructor
         assert(len(df) > 0)
-
+        
         self._df = df
         self.columns = columns
 

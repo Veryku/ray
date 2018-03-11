@@ -61,7 +61,6 @@ class DataFrame(object):
         if row_partitions is None:
             row_partitions = _rebuild_rows.remote(col_partitions)
 
-        self.columns = columns
         self._col_partitions = col_partitions
         self._row_partitions = row_partitions
 
@@ -70,8 +69,16 @@ class DataFrame(object):
         self._row_lengths, self._row_index = \
             _compute_length_and_index.remote(self._row_partitions)
 
+        # self._col_lengths, self._col_index = \
+        #         [1] * len(columns), pd.DataFrame({"partition": list(range(len(columns))), "index_within_partition": [0] * len(columns)})
+        self._col_lengths, self._col_index = \
+            _compute_length_and_index.remote(self._col_partitions)
+
         if index is not None:
             self.index = index
+
+        if columns is not None:
+            self.columns = columns
 
     def __str__(self):
         return repr(self)
@@ -149,7 +156,7 @@ class DataFrame(object):
     index = property(_get_index, _set_index)
 
     def _get__row_index(self):
-        """Get the _index for this DataFrame.
+        """Get the _row_index for this DataFrame.
 
         Returns:
             The default index.
@@ -159,7 +166,7 @@ class DataFrame(object):
         return self._row_index_cache
 
     def _set__row_index(self, new__index):
-        """Set the _index for this DataFrame.
+        """Set the _row_index for this DataFrame.
 
         Args:
             new__index: The new default index to set.
@@ -167,6 +174,44 @@ class DataFrame(object):
         self._row_index_cache = new__index
 
     _row_index = property(_get__row_index, _set__row_index)
+
+    def _get_columns(self):
+        """Get the columns for this DataFrame.
+
+        Returns:
+            The union of all indexes across the partitions.
+        """
+        return self._col_index.index
+
+    def _set_columns(self, new_index):
+        """Set the columns for this DataFrame.
+
+        Args:
+            new_index: The new index to set this
+        """
+        self._col_index.index = new_index
+
+    columns = property(_get_columns, _set_columns)
+
+    def _get__col_index(self):
+        """Get the _col_index for this DataFrame.
+
+        Returns:
+            The default index.
+        """
+        if isinstance(self._col_index_cache, ray.local_scheduler.ObjectID):
+            self._col_index_cache = ray.get(self._col_index_cache)
+        return self._col_index_cache
+
+    def _set__col_index(self, new__index):
+        """Set the _col_index for this DataFrame.
+
+        Args:
+            new__index: The new default index to set.
+        """
+        self._col_index_cache = new__index
+
+    _col_index = property(_get__col_index, _set__col_index)
 
     def _compute_row_lengths(self):
         """Updates the stored lengths of DataFrame partions

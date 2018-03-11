@@ -45,7 +45,7 @@ def read_parquet(path, engine='auto', columns=None, **kwargs):
         [_split_df.remote(df, chunksize) for df in df_from_row_groups])
     df_remotes = list(chain.from_iterable(splited_dfs))
 
-    return DataFrame(rows=df_remotes, columns=columns)
+    return DataFrame(row_partitions=df_remotes, columns=columns)
 
 
 @ray.remote
@@ -259,4 +259,4 @@ def read_csv(filepath,
                 filepath, start, end, kwargs=kwargs)
         df_obj_ids.append(df)
 
-    return DataFrame(rows=df_obj_ids, columns=columns)
+    return DataFrame(row_partitions=df_obj_ids, columns=columns)

@@ -3060,11 +3060,9 @@ def _compute_length_and_index(dfs):
     lengths = ray.get([_deploy_func.remote(_get_lengths, d)
                        for d in dfs])
 
-    dest_indices = {"partition":
-                    [i for i in range(len(lengths))
-                     for j in range(lengths[i])],
-                    "index_within_partition":
-                    [j for i in range(len(lengths))
-                     for j in range(lengths[i])]}
+    dest_indices = [(p_idx, p_sub_idx) for p_idx in range(len(lengths)) \
+                                       for p_sub_idx in range(lengths[p_idx])]
 
-    return lengths, pd.DataFrame(dest_indices)
+    idx_df_col_names = ("partition", "index_within_partition")
+
+    return lengths, pd.DataFrame(dest_indices, columns=idx_df_col_names)

@@ -26,7 +26,7 @@ from . import get_npartitions
 class DataFrame(object):
 
     def __init__(self, data=None, index=None, columns=None, dtype=None,
-                 copy=False, cols=None, rows=None):
+                 copy=False, col_partitions=None, row_partitions=None):
         """Distributed DataFrame object backed by Pandas dataframes.
 
         Args:
@@ -40,32 +40,35 @@ class DataFrame(object):
                 If None, infer
             copy (boolean): Copy data from inputs.
                 Only affects DataFrame / 2d ndarray input
-            cols ([ObjectID]): The list of ObjectIDs that contain the column
-                dataframe partitions.
+            _col_partitions ([ObjectID]): The list of ObjectIDs that contain
+                the column dataframe partitions.
             rows ([ObjectID]): The list of ObjectIDs that contain the row
                 dataframe partitions.
         """
         # Check type of data and use appropriate constructor
-        if data is not None or (cols is None and rows is None):
+        if data is not None or (col_partitions is None and
+                                row_partitions is None):
+
             pd_df = pd.DataFrame(data=data, index=index, columns=columns,
                                  dtype=dtype, copy=copy)
-            rows = _partition_pandas_dataframe(pd_df,
-                                               npartitions=get_npartitions())
+            row_partitions = _partition_pandas_dataframe(pd_df,
+                                                         npartitions=get_npartitions())
             columns = pd_df.columns
             index = pd_df.index
 
-        if cols is None:
-            _rebuild_columns.remote(rows)
-        if rows is None:
-            _rebuild_rows.remote(cols)
+        if col_partitions is None:
+            _rebuild_columns.remote(row_partitions)
+        if row_partitions is None:
+            _rebuild_rows.remote(col_partitions)
 
         self.columns = columns
-        self.cols = cols
-        self.rows = rows
+        self._col_partitions = col_partitions
+        self._row_partitions = row_partitions
 
         # this _index object is a pd.DataFrame
         # and we use that DataFrame's Index to index the rows.
-        self._lengths, self._index = _compute_length_and_index.remote(self.rows)
+        self._lengths, self._index = \
+            _compute_length_and_index.remote(self._row_partitions)
 
         if index is not None:
             self.index = index
@@ -127,7 +130,7 @@ class DataFrame(object):
         """Updates the stored lengths of DataFrame partions
         """
         self._lengths = [_deploy_func.remote(_get_lengths, d)
-                         for d in self.rows]
+                         for d in self._row_partitions]
 
     def _get_lengths(self):
         """Gets the lengths for each partition and caches it if it wasn't.
@@ -174,7 +177,8 @@ class DataFrame(object):
         """
         # The number of dimensions is common across all partitions.
         # The first partition will be enough.
-        return ray.get(_deploy_func.remote(lambda df: df.ndim, self.rows[0]))
+        return ray.get(_deploy_func.remote(lambda df: df.ndim,
+                                           self._row_partitions[0]))
 
     @property
     def ftypes(self):
@@ -185,7 +189,8 @@ class DataFrame(object):
         """
         # The ftypes are common across all partitions.
         # The first partition will be enough.
-        return ray.get(_deploy_func.remote(lambda df: df.ftypes, self.rows[0]))
+        return ray.get(_deploy_func.remote(lambda df: df.ftypes,
+                                           self._row_partitions[0]))
 
     @property
     def dtypes(self):
@@ -196,7 +201,8 @@ class DataFrame(object):
         """
         # The dtypes are common across all partitions.
         # The first partition will be enough.
-        return ray.get(_deploy_func.remote(lambda df: df.dtypes, self.rows[0]))
+        return ray.get(_deploy_func.remote(lambda df: df.dtypes,
+                                           self._row_partitions[0]))
 
     @property
     def empty(self):
@@ -206,7 +212,8 @@ class DataFrame(object):
             True if the DataFrame is empty.
             False otherwise.
         """
-        all_empty = ray.get(self._map_row_partitions(lambda df: df.empty).rows)
+        all_empty = ray.get(self._map_row_partitions(
+            lambda df: df.empty)._row_partitions)
         return False not in all_empty
 
     @property
@@ -216,8 +223,8 @@ class DataFrame(object):
         Returns:
             The numpy representation of this DataFrame.
         """
-        return np.concatenate(
-            ray.get(self._map_row_partitions(lambda df: df.values).rows))
+        return np.concatenate(ray.get(self._map_row_partitions(
+            lambda df: df.values)._row_partitions))
 
     @property
     def axes(self):
@@ -247,11 +254,14 @@ class DataFrame(object):
             A new DataFrame containing the result of the function.
         """
         assert(callable(func))
-        new_rows = [_deploy_func.remote(func, part) for part in self.rows]
+        new_rows = [_deploy_func.remote(func, part) for part in
+                    self._row_partitions]
         if index is None:
             index = self.index
 
-        return DataFrame(rows=new_rows, columns=self.columns, index=index)
+        return DataFrame(row_partitions=new_rows,
+                         columns=self.columns,
+                         index=index)
 
     def _map_col_partitions(self, func):
         """Apply a function on each column partition.
@@ -263,9 +273,11 @@ class DataFrame(object):
             A new DataFrame containing the result of the function.
         """
         assert(callable(func))
-        new_cols = [_deploy_func.remote(func, part) for part in self.cols]
+        new_col_partitions = [_deploy_func.remote(func, part) for part in
+                              self._col_partitions]
 
-        return DataFrame(cols=new_cols, columns=self.columns)
+        return DataFrame(col_partitions=new_col_partitions,
+                         columns=self.columns)
 
     def _update_inplace(self, df=None, columns=None, index=None):
         """Updates the current DataFrame inplace
@@ -273,11 +285,12 @@ class DataFrame(object):
         assert(len(df) > 0)
 
         if df is not None:
-            self.rows = df
+            self._row_partitions = df
         if columns is not None:
             self.columns = columns
 
-        self._lengths, self._index = _compute_length_and_index.remote(self.rows)
+        self._lengths, self._index = \
+            _compute_length_and_index.remote(self._row_partitions)
 
         if index is not None:
             self.index = index
@@ -289,7 +302,9 @@ class DataFrame(object):
             A new DataFrame containing the new column names.
         """
         new_cols = self.columns.map(lambda x: str(prefix) + str(x))
-        return DataFrame(rows=self.rows, columns=new_cols, index=self.index)
+        return DataFrame(row_partitions=self._row_partitions,
+                         columns=new_cols,
+                         index=self.index)
 
     def add_suffix(self, suffix):
         """Add a suffix to each of the column names.
@@ -298,7 +313,9 @@ class DataFrame(object):
             A new DataFrame containing the new column names.
         """
         new_cols = self.columns.map(lambda x: str(x) + str(suffix))
-        return DataFrame(rows=self.rows, columns=new_cols, index=self.index)
+        return DataFrame(row_partitions=self._row_partitions,
+                         columns=new_cols,
+                         index=self.index)
 
     def applymap(self, func):
         """Apply a function to a DataFrame elementwise.
@@ -316,7 +333,9 @@ class DataFrame(object):
         Returns:
             A new DataFrame pointing to the same partitions as this one.
         """
-        return DataFrame(rows=self.rows, columns=self.columns, index=self.index)
+        return DataFrame(row_partitions=self._row_partitions,
+                         columns=self.columns,
+                         index=self.index)
 
     def groupby(self, by=None, axis=0, level=None, as_index=True, sort=True,
                 group_keys=True, squeeze=False, **kwargs):
@@ -379,7 +398,7 @@ class DataFrame(object):
                                       sort=sort,
                                       group_keys=group_keys,
                                       squeeze=squeeze,
-                                      **kwargs)).rows],
+                                      **kwargs))._row_partitions],
                                     new_cols, self.index)
 
         # Begin groupby for rows. Requires shuffle.
@@ -395,9 +414,9 @@ class DataFrame(object):
         # grouped index to get the index we will use.
         assignments_df.index = assignments_df.index.droplevel()
         partition_assignments = assign_partitions.remote(assignments_df,
-                                                         len(self.rows))
-        shufflers = [ShuffleActor.remote(self.rows[i])
-                     for i in range(len(self.rows))]
+                                                         len(self._row_partitions))
+        shufflers = [ShuffleActor.remote(self._row_partitions[i])
+                     for i in range(len(self._row_partitions))]
 
         shuffles_done = \
             [shufflers[i].shuffle.remote(
@@ -516,7 +535,7 @@ class DataFrame(object):
             return df
 
         temp_index = [idx
-                      for _ in range(len(self.rows))
+                      for _ in range(len(self._row_partitions))
                       for idx in self.columns]
         temp_columns = self.index
         local_transpose = self._map_row_partitions(
@@ -535,8 +554,9 @@ class DataFrame(object):
             else:
                 x[i] = (column_names[cumulative[i-1]:cumulative[i]])
 
-        for i in range(len(local_transpose.rows)):
-            local_transpose.rows[i] = update_columns.remote(local_transpose.rows[i], x[i])
+        for i in range(len(local_transpose._row_partitions)):
+            local_transpose._row_partitions[i] = \
+                update_columns.remote(local_transpose._row_partitions[i], x[i])
 
         df = local_transpose.groupby(by=local_transpose.index,
                                      sort=False)\
@@ -689,7 +709,7 @@ class DataFrame(object):
             method='bfill', axis=axis, limit=limit, downcast=downcast
         )
         if inplace:
-            self.rows = new_df.rows
+            self._row_partitions = new_df._row_partitions
             self.columns = new_df.columns
         else:
             return new_df
@@ -777,7 +797,7 @@ class DataFrame(object):
                                 numeric_only=numeric_only)
         else:
             temp_index = [idx
-                          for _ in range(len(self.rows))
+                          for _ in range(len(self._row_partitions))
                           for idx in self.columns]
 
             collapsed_df = sum(
@@ -787,7 +807,7 @@ class DataFrame(object):
                             axis=axis,
                             level=level,
                             numeric_only=numeric_only),
-                        index=temp_index).rows))
+                        index=temp_index)._row_partitions))
             return collapsed_df
 
     def cov(self, min_periods=None):
@@ -895,19 +915,19 @@ class DataFrame(object):
                     filtered_index.loc[
                         filtered_index['partition'] == i
                     ]['index_within_partition']
-                    for i in range(len(self.rows))
+                    for i in range(len(self._row_partitions))
                 ]
 
                 new_df = [
                     _deploy_func.remote(
                         lambda df, new_labels: df.drop(
                             new_labels, level=level, errors='ignore'),
-                        self.rows[i], partition_idx[i]
+                        self._row_partitions[i], partition_idx[i]
                     )
-                    for i in range(len(self.rows))
+                    for i in range(len(self._row_partitions))
                 ]
                 new_index = self._index.copy().drop(values, errors=errors)
-                new_df = DataFrame(rows=new_df, columns=self.columns,
+                new_df = DataFrame(row_partitions=new_df, columns=self.columns,
                                    index=new_index.index)
         except (ValueError, KeyError):
             if errors == 'raise':
@@ -931,7 +951,7 @@ class DataFrame(object):
 
         if inplace:
             self._update_inplace(
-                df=new_df.rows,
+                df=new_df._row_partitions,
                 index=new_df.index,
                 columns=new_df.columns
             )
@@ -969,13 +989,13 @@ class DataFrame(object):
         other_df = None
         for i, idx in other._index.iterrows():
             if idx['partition'] != other_partition:
-                other_df = ray.get(other.rows[idx['partition']])
+                other_df = ray.get(other._row_partitions[idx['partition']])
                 other_partition = idx['partition']
             # TODO: group series here into full df partitions to reduce
             # the number of remote calls to helper
             other_series = other_df.iloc[idx['index_within_partition']]
             curr_index = self._index.iloc[i]
-            curr_df = self.rows[int(curr_index['partition'])]
+            curr_df = self._row_partitions[int(curr_index['partition'])]
             results.append(_deploy_func.remote(helper,
                                                curr_df,
                                                curr_index,
@@ -1038,7 +1058,7 @@ class DataFrame(object):
         if inplace:
             # TODO: return ray series instead of ray df
             self.e = new_df.drop(columns=self.columns)
-            self.rows = new_df.rows
+            self._row_partitions = new_df._row_partitions
             self.columns = new_df.columns
         else:
             return new_df
@@ -1061,7 +1081,7 @@ class DataFrame(object):
             method='ffill', axis=axis, limit=limit, downcast=downcast
         )
         if inplace:
-            self.rows = new_df.rows
+            self._row_partitions = new_df._row_partitions
             self.columns = new_df.columns
         else:
             return new_df
@@ -1116,7 +1136,7 @@ class DataFrame(object):
             self._index.loc[
                 self._index['partition'] == i
             ].index
-            for i in range(len(self.rows))
+            for i in range(len(self._row_partitions))
         ]
 
         def fillna_part(df, real_index):
@@ -1132,10 +1152,10 @@ class DataFrame(object):
                 fillna_part,
                 part, partition_idx[i]
             )
-            for i, part in enumerate(self.rows)
+            for i, part in enumerate(self._row_partitions)
         ]
 
-        new_df = DataFrame(rows=new_df, columns=self.columns, index=self.index)
+        new_df = DataFrame(row_partitions=new_df, columns=self.columns, index=self.index)
 
         is_bfill = method is not None and method in ['backfill', 'bfill']
         is_ffill = method is not None and method in ['pad', 'ffill']
@@ -1149,26 +1169,26 @@ class DataFrame(object):
             last_row_df = None
             if is_ffill:
                 last_row_df = pd.DataFrame(
-                    [df.iloc[-1, :] for df in ray.get(new_df.rows[:-1])]
+                    [df.iloc[-1, :] for df in ray.get(new_df._row_partitions[:-1])]
                 )
             else:
                 last_row_df = pd.DataFrame(
-                    [df.iloc[0, :] for df in ray.get(new_df.rows[1:])]
+                    [df.iloc[0, :] for df in ray.get(new_df._row_partitions[1:])]
                 )
             last_row_df.fillna(value=value, method=method, axis=axis,
                                inplace=True, limit=limit,
                                downcast=downcast, **kwargs)
             if is_ffill:
-                new_df.rows[1:] = [
-                    _deploy_func.remote(fill_in_part, new_df.rows[i + 1],
+                new_df._row_partitions[1:] = [
+                    _deploy_func.remote(fill_in_part, new_df._row_partitions[i + 1],
                                         last_row_df.iloc[i, :])
-                    for i in range(len(self.rows) - 1)
+                    for i in range(len(self._row_partitions) - 1)
                 ]
             else:
-                new_df.rows[:-1] = [
-                    _deploy_func.remote(fill_in_part, new_df.rows[i],
+                new_df._row_partitions[:-1] = [
+                    _deploy_func.remote(fill_in_part, new_df._row_partitions[i],
                                         last_row_df.iloc[i])
-                    for i in range(len(self.rows) - 1)
+                    for i in range(len(self._row_partitions) - 1)
                 ]
 
         # TODO: Revist this to improve performance
@@ -1179,7 +1199,7 @@ class DataFrame(object):
 
         if inplace:
             self._update_inplace(
-                df=new_df.rows,
+                df=new_df._row_partitions,
                 columns=new_df.columns,
                 index=new_df.index
             )
@@ -1268,7 +1288,7 @@ class DataFrame(object):
         """
         return ray.get(
             _deploy_func.remote(
-                lambda df: df.get_dtype_counts(), self.rows[0]
+                lambda df: df.get_dtype_counts(), self._row_partitions[0]
             )
         )
 
@@ -1280,7 +1300,7 @@ class DataFrame(object):
         """
         return ray.get(
             _deploy_func.remote(
-                lambda df: df.get_ftype_counts(), self.rows[0]
+                lambda df: df.get_ftype_counts(), self._row_partitions[0]
             )
         )
 
@@ -1314,7 +1334,7 @@ class DataFrame(object):
             return self
 
         cumulative = np.cumsum(np.array(sizes))
-        new_dfs = [self.rows[i]
+        new_dfs = [self._row_partitions[i]
                    for i in range(len(cumulative))
                    if cumulative[i] < n]
 
@@ -1327,10 +1347,12 @@ class DataFrame(object):
             num_to_transfer = n - cumulative[last_index - 1]
 
         new_dfs.append(_deploy_func.remote(lambda df: df.head(num_to_transfer),
-                                           self.rows[last_index]))
+                                           self._row_partitions[last_index]))
 
         index = self._index.head(n).index
-        return DataFrame(rows=new_dfs, columns=self.columns, index=index)
+        return DataFrame(row_partitions=new_dfs,
+                         columns=self.columns,
+                         index=index)
 
     def hist(self, data, column=None, by=None, grid=True, xlabelsize=None,
              xrot=None, ylabelsize=None, yrot=None, ax=None, sharex=False,
@@ -1429,14 +1451,14 @@ class DataFrame(object):
             _df.insert(_loc, _column, _part, _allow_duplicates)
             return _df
 
-        self.rows = \
+        self._row_partitions = \
             [_deploy_func.remote(_insert,
-                                 self.rows[i],
+                                 self._row_partitions[i],
                                  loc,
                                  column,
                                  partitions[i],
                                  allow_duplicates)
-             for i in range(len(self.rows))]
+             for i in range(len(self._row_partitions))]
 
         self.columns = self.columns.insert(loc, column)
 
@@ -1457,9 +1479,9 @@ class DataFrame(object):
         Returns:
             A generator that iterates over the rows of the frame.
         """
-        iters = ray.get([
-            _deploy_func.remote(
-                lambda df: list(df.iterrows()), part) for part in self.rows])
+        iters = ray.get([_deploy_func.remote(
+            lambda df: list(df.iterrows()), part)
+            for part in self._row_partitions])
         iters = itertools.chain.from_iterable(iters)
         series = map(lambda idx_series_tuple: idx_series_tuple[1], iters)
         return zip(self.index, series)
@@ -1476,7 +1498,8 @@ class DataFrame(object):
             A generator that iterates over the columns of the frame.
         """
         iters = ray.get([_deploy_func.remote(
-            lambda df: list(df.items()), part) for part in self.rows])
+            lambda df: list(df.items()), part)
+            for part in self._row_partitions])
 
         def concat_iters(iterables):
             for partitions in zip(*iterables):
@@ -1516,7 +1539,7 @@ class DataFrame(object):
         iters = ray.get([
             _deploy_func.remote(
                 lambda df: list(df.itertuples(index=index, name=name)),
-                part) for part in self.rows])
+                part) for part in self._row_partitions])
         iters = itertools.chain.from_iterable(iters)
 
         def _replace_index(row_tuple, idx):
@@ -1771,8 +1794,8 @@ class DataFrame(object):
         """
         popped = to_pandas(self._map_row_partitions(
             lambda df: df.pop(item)))
-        self.rows = self._map_row_partitions(
-            lambda df: df.drop([item], axis=1)).rows
+        self._row_partitions = self._map_row_partitions(
+            lambda df: df.drop([item], axis=1))._row_partitions
         self.columns = self.columns.drop(item)
         return popped
 
@@ -1806,12 +1829,12 @@ class DataFrame(object):
             A new DataFrame if inplace=False
         """
         new_dfs = [_deploy_func.remote(lambda df: df.query(expr, **kwargs),
-                                       part) for part in self.rows]
+                                       part) for part in self._row_partitions]
 
         if inplace:
             self._update_inplace(new_dfs)
         else:
-            return DataFrame(rows=new_dfs, columns=self.columns)
+            return DataFrame(row_partitions=new_dfs, columns=self.columns)
 
     def radd(self, other, axis='columns', level=None, fill_value=None):
         raise NotImplementedError(
@@ -1929,7 +1952,7 @@ class DataFrame(object):
                             values, mask, np.nan)
             return values
 
-        _, new_index = _compute_length_and_index.remote(new_obj.rows)
+        _, new_index = _compute_length_and_index.remote(new_obj._row_partitions)
         new_index = ray.get(new_index).index
         if level is not None:
             if not isinstance(level, (tuple, list)):
@@ -2245,7 +2268,7 @@ class DataFrame(object):
 
         cumulative = np.cumsum(np.array(sizes[::-1]))
 
-        reverse_dfs = self.rows[::-1]
+        reverse_dfs = self._row_partitions[::-1]
         new_dfs = [reverse_dfs[i]
                    for i in range(len(cumulative))
                    if cumulative[i] < n]
@@ -2264,7 +2287,7 @@ class DataFrame(object):
         new_dfs.reverse()
 
         index = self._index.tail(n).index
-        return DataFrame(rows=new_dfs, columns=self.columns, index=index)
+        return DataFrame(row_partitions=new_dfs, columns=self.columns, index=index)
 
     def take(self, indices, axis=0, convert=None, is_copy=True, **kwargs):
         raise NotImplementedError(
@@ -2589,7 +2612,8 @@ class DataFrame(object):
         def del_helper(df):
             df.__delitem__(key)
             return df
-        self.rows = self._map_row_partitions(del_helper).rows
+        self._row_partitions = \
+            self._map_row_partitions(del_helper)._row_partitions
         self.columns = self.columns.drop(key)
 
     def __finalize__(self, other, method=None, **kwargs):
@@ -2969,7 +2993,7 @@ def from_pandas(df, npartitions=None, chunksize=None):
     """
     dataframes = _partition_pandas_dataframe(df, npartitions, chunksize)
 
-    return DataFrame(rows=dataframes, columns=df.columns, index=df.index)
+    return DataFrame(row_partitions=dataframes, columns=df.columns, index=df.index)
 
 
 def to_pandas(df):
@@ -2981,7 +3005,7 @@ def to_pandas(df):
     Returns:
         A new pandas DataFrame.
     """
-    pd_df = pd.concat(ray.get(df.rows))
+    pd_df = pd.concat(ray.get(df._row_partitions))
     pd_df.index = df.index
     pd_df.columns = df.columns
     return pd_df
@@ -2993,7 +3017,7 @@ def _rebuild_columns(rows):
 
 
 @ray.remote
-def _rebuild_rows(cols):
+def _rebuild_rows(col_partitions):
     return []
 
 

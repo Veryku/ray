@@ -321,7 +321,6 @@ class DataFrame(object):
     def groupby(self, by=None, axis=0, level=None, as_index=True, sort=True,
                 group_keys=True, squeeze=False, **kwargs):
         """Apply a groupby to this DataFrame. See _groupby() remote task.
-
         Args:
             by: The value to groupby.
             axis: The axis to groupby.
@@ -330,7 +329,6 @@ class DataFrame(object):
             sort: Whether or not to sort the result by the index.
             group_keys: Whether or not to group the keys.
             squeeze: Whether or not to squeeze.
-
         Returns:
             A new DataFrame resulting from the groupby.
         """
@@ -347,8 +345,33 @@ class DataFrame(object):
             if sort:
                 new_cols = sorted(self.columns)
             else:
+                chunksize = int(len(uniques) / num_partitions) + 1
+
+            assignments = []
+
+            while len(uniques) > chunksize:
+                temp_df = uniques[:chunksize]
+                assignments.append(temp_df)
+                uniques = uniques[chunksize:]
+            else:
+                assignments.append(uniques)
+
+            return assignments
+
+        if by is None:
+            raise TypeError("You have to supply one of 'by' and 'level'")
+        elif axis != 0 and axis != 1:
+            raise TypeError("")
+        elif not as_index and axis == 1 or axis == 'columns':
+            raise ValueError("as_index=False only valid for axis=0")
+
+        # The easy one. Everything for columns can be handled by the partitions.
+        if axis == 1 or axis == 'columns':
+            if sort:
+                new_cols = sorted(self.columns)
+            else:
                 new_cols = self.columns
-            return DataFrameGroupBy(self._map_row_partitions(
+            return DataFrameGroupBy([self._map_row_partitions(
                 lambda df: df.groupby(by=by,
                                       axis=axis,
                                       level=level,
@@ -356,7 +379,7 @@ class DataFrame(object):
                                       sort=sort,
                                       group_keys=group_keys,
                                       squeeze=squeeze,
-                                      **kwargs))._df,
+                                      **kwargs)).rows],
                                     new_cols, self.index)
 
         # Begin groupby for rows. Requires shuffle.
@@ -400,19 +423,6 @@ class DataFrame(object):
                                   **kwargs))
                                 for shuffler in shufflers],
                                 self.columns, new_index)
-
-    def reduce_by_index(self, func, axis=0):
-        """Perform a reduction based on the row index.
-
-        Args:
-            func (callable): The function to call on the partition
-                after the groupby.
-
-        Returns:
-            A new DataFrame with the result of the reduction.
-        """
-        return self.groupby(axis=axis)._map_row_partitions(
-            func, index=pd.unique(self.index))
 
     def sum(self, axis=None, skipna=True, level=None, numeric_only=None):
         """Perform a sum across the DataFrame.

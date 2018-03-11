@@ -104,7 +104,7 @@ def test_copy(ray_df):
     new_ray_df = ray_df.copy()
 
     assert(new_ray_df is not ray_df)
-    assert(new_ray_df.rows == ray_df.rows)
+    assert(new_ray_df._row_partitions == ray_df._row_partitions)
 
 
 @pytest.fixture

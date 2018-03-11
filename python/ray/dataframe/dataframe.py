@@ -51,8 +51,9 @@ class DataFrame(object):
 
             pd_df = pd.DataFrame(data=data, index=index, columns=columns,
                                  dtype=dtype, copy=copy)
-            row_partitions = _partition_pandas_dataframe(pd_df,
-                                                         npartitions=get_npartitions())
+            row_partitions = \
+                _partition_pandas_dataframe(pd_df,
+                                            npartitions=get_npartitions())
             columns = pd_df.columns
             index = pd_df.index
 
@@ -1197,7 +1198,9 @@ class DataFrame(object):
             for i, part in enumerate(self._row_partitions)
         ]
 
-        new_df = DataFrame(row_partitions=new_df, columns=self.columns, index=self.index)
+        new_df = DataFrame(row_partitions=new_df,
+                           columns=self.columns,
+                           index=self.index)
 
         is_bfill = method is not None and method in ['backfill', 'bfill']
         is_ffill = method is not None and method in ['pad', 'ffill']
@@ -1211,24 +1214,28 @@ class DataFrame(object):
             last_row_df = None
             if is_ffill:
                 last_row_df = pd.DataFrame(
-                    [df.iloc[-1, :] for df in ray.get(new_df._row_partitions[:-1])]
+                    [df.iloc[-1, :] for df
+                     in ray.get(new_df._row_partitions[:-1])]
                 )
             else:
                 last_row_df = pd.DataFrame(
-                    [df.iloc[0, :] for df in ray.get(new_df._row_partitions[1:])]
+                    [df.iloc[0, :] for df
+                     in ray.get(new_df._row_partitions[1:])]
                 )
             last_row_df.fillna(value=value, method=method, axis=axis,
                                inplace=True, limit=limit,
                                downcast=downcast, **kwargs)
             if is_ffill:
                 new_df._row_partitions[1:] = [
-                    _deploy_func.remote(fill_in_part, new_df._row_partitions[i + 1],
+                    _deploy_func.remote(fill_in_part,
+                                        new_df._row_partitions[i + 1],
                                         last_row_df.iloc[i, :])
                     for i in range(len(self._row_partitions) - 1)
                 ]
             else:
                 new_df._row_partitions[:-1] = [
-                    _deploy_func.remote(fill_in_part, new_df._row_partitions[i],
+                    _deploy_func.remote(fill_in_part,
+                                        new_df._row_partitions[i],
                                         last_row_df.iloc[i])
                     for i in range(len(self._row_partitions) - 1)
                 ]
@@ -1994,7 +2001,9 @@ class DataFrame(object):
                             values, mask, np.nan)
             return values
 
-        _, new_index = _compute_length_and_index.remote(new_obj._row_partitions)
+        _, new_index = \
+            _compute_length_and_index.remote(new_obj._row_partitions)
+
         new_index = ray.get(new_index).index
         if level is not None:
             if not isinstance(level, (tuple, list)):
@@ -2329,7 +2338,9 @@ class DataFrame(object):
         new_dfs.reverse()
 
         index = self._index.tail(n).index
-        return DataFrame(row_partitions=new_dfs, columns=self.columns, index=index)
+        return DataFrame(row_partitions=new_dfs,
+                         columns=self.columns,
+                         index=index)
 
     def take(self, indices, axis=0, convert=None, is_copy=True, **kwargs):
         raise NotImplementedError(
@@ -3035,7 +3046,9 @@ def from_pandas(df, npartitions=None, chunksize=None):
     """
     dataframes = _partition_pandas_dataframe(df, npartitions, chunksize)
 
-    return DataFrame(row_partitions=dataframes, columns=df.columns, index=df.index)
+    return DataFrame(row_partitions=dataframes,
+                     columns=df.columns,
+                     index=df.index)
 
 
 def to_pandas(df):

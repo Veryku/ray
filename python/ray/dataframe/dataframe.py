@@ -63,9 +63,9 @@ class DataFrame(object):
             index = pd_df.index
 
         if col_partitions is None:
-            _rebuild_columns.remote(row_partitions)
+            col_partitions = _rebuild_cols.remote(row_partitions)
         if row_partitions is None:
-            _rebuild_rows.remote(col_partitions)
+            row_partitions = _rebuild_rows.remote(col_partitions)
 
         self.columns = columns
         self._col_partitions = col_partitions
@@ -93,6 +93,48 @@ class DataFrame(object):
         result = head + "\n...\n" + tail
 
         return result
+
+    def _get_row_partitions(self):
+        """Get the list of row partitions for this dataframe.
+
+        Returns:
+            [ObjectID]: List of row partitions.
+        """
+        if isinstance(self._row_partitions_cache,
+                      ray.local_scheduler.ObjectID):
+            self._row_partitions_cache = ray.get(self._row_partitions_cache)
+        return self._row_partitions_cache
+
+    def _set_row_partitions(self, new_row_partitions):
+        """Set the list of row partitions for this dataframe.
+
+        Args:
+            new_row_partitions: The new row partitions.
+        """
+        self._row_partitions_cache = new_row_partitions
+
+    _row_partitions = property(_get_row_partitions, _set_row_partitions)
+
+    def _get_col_partitions(self):
+        """Get the list of column partitions for this dataframe.
+
+        Returns:
+            [ObjectID]: List of column partitions.
+        """
+        if isinstance(self._col_partitions_cache,
+                      ray.local_scheduler.ObjectID):
+            self._col_partitions_cache = ray.get(self._col_partitions_cache)
+        return self._col_partitions_cache
+
+    def _set_col_partitions(self, new_col_partitions):
+        """Set the list of column partitions for this dataframe.
+
+        Args:
+            new_col_partitions: The new column partitions.
+        """
+        self._col_partitions_cache = new_col_partitions
+
+    _col_partitions = property(_get_col_partitions, _set_col_partitions)
 
     def _get_index(self):
         """Get the index for this DataFrame.

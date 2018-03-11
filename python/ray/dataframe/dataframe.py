@@ -373,7 +373,7 @@ class DataFrame(object):
                                       sort=sort,
                                       group_keys=group_keys,
                                       squeeze=squeeze,
-                                      **kwargs))._df],
+                                      **kwargs)).rows],
                                     new_cols, self.index)
 
         # Begin groupby for rows. Requires shuffle.
@@ -385,13 +385,13 @@ class DataFrame(object):
                                              squeeze=squeeze, **kwargs)\
             .apply(lambda x: x[:])
 
-        # We did a gropuby, now we have to drop the outermost layer of the
+        # We did a groupby, now we have to drop the outermost layer of the
         # grouped index to get the index we will use.
         assignments_df.index = assignments_df.index.droplevel()
         partition_assignments = assign_partitions.remote(assignments_df,
-                                                         len(self._df))
-        shufflers = [ShuffleActor.remote(self._df[i])
-                     for i in range(len(self._df))]
+                                                         len(self.rows))
+        shufflers = [ShuffleActor.remote(self.rows[i])
+                     for i in range(len(self.rows))]
 
         [shufflers[i].shuffle.remote(self._index[self._index['partition'] == i],
                                      partition_assignments, i, *shufflers)

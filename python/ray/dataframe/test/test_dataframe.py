@@ -1874,7 +1874,7 @@ def test_plot():
 
 @pytest.fixture
 def test_pop(ray_df, pandas_df):
-    temp_ray_df = ray_df._map_row_partitions(lambda df: df)
+    temp_ray_df = ray_df.copy()
     temp_pandas_df = pandas_df.copy()
     ray_popped = temp_ray_df.pop('col2')
     pandas_popped = temp_pandas_df.pop('col2')

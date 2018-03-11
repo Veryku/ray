@@ -11,6 +11,15 @@ from threading import Thread
 class ShuffleActor(object):
 
     def __init__(self, partition_data, axis=0):
+        """Actor for facilitating distributed dataframe shuffle
+        operations. Each partition in a Ray DataFrame will have be wrapped
+        by a ShuffleActor, and during a shuffle, a collection of
+        ShuffleActors will shuffle data onto each other together.
+
+        Args:
+            partition_data (ObjectID): The ObjectID of the partition this
+                ShuffleActor is wrapped around.
+        """
         self.incoming = []
         self.partition_data = partition_data
         self.index_of_self = None
@@ -93,6 +102,7 @@ class ShuffleActor(object):
         for t in threads:
             t.join()
 
+        # Append data to other new partitions' ShuffleActor's `add_to_incoming` lists
         for i in range(num_partitions):
             if i == self.index_of_self:
                 continue
@@ -108,6 +118,15 @@ class ShuffleActor(object):
         return None
 
     def add_to_incoming(self, data):
+        """Add data to the list of data to be coalesced into. Note that
+        `self.incoming` is a list of Pandas DataFrames, which will
+        eventually all be concatenated together.
+
+        Args:
+            data (pd.DataFrame): A DataFrame containing the rows to be
+                coalesced.
+        """
+
         self.incoming.append(data)
 
     def apply_func(self, func, *args):

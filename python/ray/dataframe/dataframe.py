@@ -321,7 +321,6 @@ class DataFrame(object):
     def groupby(self, by=None, axis=0, level=None, as_index=True, sort=True,
                 group_keys=True, squeeze=False, **kwargs):
         """Apply a groupby to this DataFrame. See _groupby() remote task.
-
         Args:
             by: The value to groupby.
             axis: The axis to groupby.
@@ -330,7 +329,6 @@ class DataFrame(object):
             sort: Whether or not to sort the result by the index.
             group_keys: Whether or not to group the keys.
             squeeze: Whether or not to squeeze.
-
         Returns:
             A new DataFrame resulting from the groupby.
         """
@@ -354,11 +352,46 @@ class DataFrame(object):
 
             return assignments
 
-        partition_assignments = assign_partitions.remote(self._index,
-                                                         len(self.rows))
+        if by is None:
+            raise TypeError("You have to supply one of 'by' and 'level'")
+        elif axis != 0 and axis != 1:
+            raise TypeError("")
+        elif not as_index and axis == 1 or axis == 'columns':
+            raise ValueError("as_index=False only valid for axis=0")
 
-        shufflers = [ShuffleActor.remote(self.rows[i])
-                     for i in range(len(self.rows))]
+        # The easy one. Everything for columns can be handled by the partitions.
+        if axis == 1 or axis == 'columns':
+            if sort:
+                new_cols = sorted(self.columns)
+            else:
+                new_cols = self.columns
+            return DataFrameGroupBy([self._map_partitions(
+                lambda df: df.groupby(by=by,
+                                      axis=axis,
+                                      level=level,
+                                      as_index=as_index,
+                                      sort=sort,
+                                      group_keys=group_keys,
+                                      squeeze=squeeze,
+                                      **kwargs))._df],
+                                    new_cols, self.index)
+
+        # Begin groupby for rows. Requires shuffle.
+        # We perform the groupby on the index first to assign the partitions
+        # for the shuffle.
+        assignments_df = self._index.groupby(by=by, axis=axis, level=level,
+                                             as_index=as_index, sort=sort,
+                                             group_keys=group_keys,
+                                             squeeze=squeeze, **kwargs)\
+            .apply(lambda x: x[:])
+
+        # We did a gropuby, now we have to drop the outermost layer of the
+        # grouped index to get the index we will use.
+        assignments_df.index = assignments_df.index.droplevel()
+        partition_assignments = assign_partitions.remote(assignments_df,
+                                                         len(self._df))
+        shufflers = [ShuffleActor.remote(self._df[i])
+                     for i in range(len(self._df))]
 
         [shufflers[i].shuffle.remote(self._index[self._index['partition'] == i],
                                      partition_assignments, i, *shufflers)
@@ -382,19 +415,6 @@ class DataFrame(object):
                                   **kwargs))
                                 for shuffler in shufflers],
                                 self.columns, new_index)
-
-    def reduce_by_index(self, func, axis=0):
-        """Perform a reduction based on the row index.
-
-        Args:
-            func (callable): The function to call on the partition
-                after the groupby.
-
-        Returns:
-            A new DataFrame with the result of the reduction.
-        """
-        return self.groupby(axis=axis)._map_row_partitions(
-            func, index=pd.unique(self.index))
 
     def sum(self, axis=None, skipna=True, level=None, numeric_only=None):
         """Perform a sum across the DataFrame.

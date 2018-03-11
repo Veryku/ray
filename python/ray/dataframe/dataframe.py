@@ -397,7 +397,7 @@ class DataFrame(object):
                                              squeeze=squeeze, **kwargs)\
             .apply(lambda x: x[:])
 
-        # We did a gropuby, now we have to drop the outermost layer of the
+        # We did a groupby, now we have to drop the outermost layer of the
         # grouped index to get the index we will use.
         assignments_df.index = assignments_df.index.droplevel()
         partition_assignments = assign_partitions.remote(assignments_df,

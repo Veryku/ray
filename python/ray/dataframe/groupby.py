@@ -31,7 +31,7 @@ class DataFrameGroupBy(object):
         if index is None:
             index = self._index
 
-        return DataFrame(new_df, self._columns, index=index)
+        return DataFrame(rows=new_df, columns=self._columns, index=index)
 
     @property
     def ngroups(self):

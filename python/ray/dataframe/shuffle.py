@@ -113,7 +113,8 @@ class ShuffleActor(object):
                 list_of_partitions[i].add_to_incoming.remote((
                     self.index_of_self, data_to_send[i]))
                 # Drop the data once it's been sent.
-                self.partition_data.drop(indices_to_send[i], inplace=True)
+                self.partition_data.drop(indices_to_send[i], inplace=True,
+                                         axis=self.shuffle_axis)
             except KeyError:
                 pass
 

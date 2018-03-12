@@ -64,7 +64,7 @@ class DataFrame(object):
             index = pd_df.index
 
         if col_partitions is None:
-            col_partitions = _rebuild_cols.remote(row_partitions)
+            col_partitions = _rebuild_cols.remote(row_partitions, columns)
         if row_partitions is None:
             row_partitions = _rebuild_rows.remote(col_partitions)
 
@@ -409,31 +409,6 @@ class DataFrame(object):
 
         # The easy one. Everything for columns can be handled by the
         # partitions.
-        if axis == 1 or axis == 'columns':
-            if sort:
-                new_cols = sorted(self.columns)
-            else:
-                chunksize = int(len(uniques) / num_partitions) + 1
-
-            assignments = []
-
-            while len(uniques) > chunksize:
-                temp_df = uniques[:chunksize]
-                assignments.append(temp_df)
-                uniques = uniques[chunksize:]
-            else:
-                assignments.append(uniques)
-
-            return assignments
-
-        if by is None:
-            raise TypeError("You have to supply one of 'by' and 'level'")
-        elif axis != 0 and axis != 1:
-            raise TypeError("")
-        elif not as_index and axis == 1 or axis == 'columns':
-            raise ValueError("as_index=False only valid for axis=0")
-
-        # The easy one. Everything for columns can be handled by the partitions.
         if axis == 1 or axis == 'columns':
             if sort:
                 new_cols = sorted(self.columns)

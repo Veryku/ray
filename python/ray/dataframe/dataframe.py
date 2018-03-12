@@ -13,11 +13,11 @@ from pandas.core.dtypes.common import (
     is_bool_dtype,
     is_numeric_dtype,
     is_timedelta64_dtype)
-
 import warnings
 import numpy as np
 import ray
 import itertools
+
 from .shuffle import ShuffleActor
 from .groupby import DataFrameGroupBy
 
@@ -295,26 +295,6 @@ class DataFrame(object):
         Returns:
             A new DataFrame resulting from the groupby.
         """
-        @ray.remote
-        def assign_partitions(index_df, num_partitions):
-            uniques = index_df.index.unique()
-
-            if len(uniques) % num_partitions == 0:
-                chunksize = int(len(uniques) / num_partitions)
-            else:
-                chunksize = int(len(uniques) / num_partitions) + 1
-
-            assignments = []
-
-            while len(uniques) > chunksize:
-                temp_df = uniques[:chunksize]
-                assignments.append(temp_df)
-                uniques = uniques[chunksize:]
-            else:
-                assignments.append(uniques)
-
-            return assignments
-
         if by is None:
             raise TypeError("You have to supply one of 'by' and 'level'")
         elif axis != 0 and axis != 1:
@@ -322,7 +302,8 @@ class DataFrame(object):
         elif not as_index and axis == 1 or axis == 'columns':
             raise ValueError("as_index=False only valid for axis=0")
 
-        # The easy one. Everything for columns can be handled by the partitions.
+        # The easy one. Everything for columns can be handled by the
+        # partitions.
         if axis == 1 or axis == 'columns':
             if sort:
                 new_cols = sorted(self.columns)
@@ -392,10 +373,10 @@ class DataFrame(object):
             The sum of the DataFrame.
         """
         if axis == 1:
-            return self._map_partitions(lambda df: df.sum(axis=axis,
-                                                          skipna=skipna,
-                                                          level=level,
-                                                          numeric_only=numeric_only))
+            return self._map_partitions(
+                lambda df: df.sum(axis=axis, skipna=skipna, level=level,
+                                  numeric_only=numeric_only))
+
         elif axis == 0 or axis is None:
             return self.T.sum(axis=1, skipna=skipna, level=level,
                               numeric_only=numeric_only)
@@ -2777,6 +2758,27 @@ class DataFrame(object):
         return _iLoc_Indexer(self)
 
 
+@ray.remote
+def assign_partitions(index_df, num_partitions):
+    uniques = index_df.index.unique()
+
+    if len(uniques) % num_partitions == 0:
+        chunksize = int(len(uniques) / num_partitions)
+    else:
+        chunksize = int(len(uniques) / num_partitions) + 1
+
+    assignments = []
+
+    while len(uniques) > chunksize:
+        temp_df = uniques[:chunksize]
+        assignments.append(temp_df)
+        uniques = uniques[chunksize:]
+    else:
+        assignments.append(uniques)
+
+    return assignments
+
+
 def _get_lengths(df):
     """Gets the length of the dataframe.
 
@@ -2868,7 +2870,7 @@ def from_pandas(df, npartitions=None, chunksize=None, sort=True):
     """
 
     if npartitions is not None:
-        chunksize = int(len(df) / npartitions) + 1
+        chunksize = len(df) // npartitions + 1
     elif chunksize is None:
         raise ValueError("The number of partitions or chunksize must be set.")
 

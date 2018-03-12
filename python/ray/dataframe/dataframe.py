@@ -58,7 +58,7 @@ class DataFrame(object):
             index = pd_df.index
 
         if col_partitions is None:
-            col_partitions = _rebuild_cols.remote(row_partitions)
+            col_partitions = _rebuild_cols.remote(row_partitions, columns)
         if row_partitions is None:
             row_partitions = _rebuild_rows.remote(col_partitions)
 
@@ -403,31 +403,6 @@ class DataFrame(object):
 
         # The easy one. Everything for columns can be handled by the
         # partitions.
-        if axis == 1 or axis == 'columns':
-            if sort:
-                new_cols = sorted(self.columns)
-            else:
-                chunksize = int(len(uniques) / num_partitions) + 1
-
-            assignments = []
-
-            while len(uniques) > chunksize:
-                temp_df = uniques[:chunksize]
-                assignments.append(temp_df)
-                uniques = uniques[chunksize:]
-            else:
-                assignments.append(uniques)
-
-            return assignments
-
-        if by is None:
-            raise TypeError("You have to supply one of 'by' and 'level'")
-        elif axis != 0 and axis != 1:
-            raise TypeError("")
-        elif not as_index and axis == 1 or axis == 'columns':
-            raise ValueError("as_index=False only valid for axis=0")
-
-        # The easy one. Everything for columns can be handled by the partitions.
         if axis == 1 or axis == 'columns':
             if sort:
                 new_cols = sorted(self.columns)
@@ -3067,7 +3042,7 @@ def to_pandas(df):
 
 
 @ray.remote
-def _rebuild_cols(row_partitions):
+def _rebuild_cols(row_partitions, columns):
     """Rebuild the column partitions from the row partitions.
 
     Args:
@@ -3076,7 +3051,22 @@ def _rebuild_cols(row_partitions):
     Returns:
         [ObjectID]: List of new column partitions.
     """
-    return []
+    partition_assignments = assign_partitions.remote(columns,
+                                                     len(row_partitions))
+    shufflers = [ShuffleActor.remote(x, partition_axis=0, shuffle_axis=1)
+                 for x in row_partitions]
+
+    shufflers_done = \
+        [shufflers[i].shuffle.remote(
+            columns,
+            partition_assignments,
+            i,
+            *shufflers)
+         for i in range(len(shufflers))]
+
+    # Block on all shuffles being complete
+    ray.get(shufflers_done)
+    return [shuffler.apply_func.remote(lambda x: x) for shuffler in shufflers]
 
 
 @ray.remote

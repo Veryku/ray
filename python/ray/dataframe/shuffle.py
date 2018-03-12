@@ -10,7 +10,7 @@ from threading import Thread
 @ray.remote(num_cpus=2)
 class ShuffleActor(object):
 
-    def __init__(self, partition_data, axis=0):
+    def __init__(self, partition_data, partition_axis=0, shuffle_axis=0):
         """Actor for facilitating distributed dataframe shuffle
         operations. Each partition in a Ray DataFrame will have be wrapped
         by a ShuffleActor, and during a shuffle, a collection of
@@ -19,11 +19,14 @@ class ShuffleActor(object):
         Args:
             partition_data (ObjectID): The ObjectID of the partition this
                 ShuffleActor is wrapped around.
+            partition_axis (int): The axis on which the data was partitioned.
+            shuffle_axis (int): The axis to index on for the shuffle.
         """
         self.incoming = []
         self.partition_data = partition_data
         self.index_of_self = None
-        self.axis = axis
+        self.partition_axis = partition_axis
+        self.shuffle_axis = shuffle_axis
 
     def shuffle(self, index, partition_assignments, index_of_self,
                 *list_of_partitions):
@@ -75,15 +78,15 @@ class ShuffleActor(object):
                                   for idx in partition_assignments[i]
                                   if idx in index.index]
 
-            if self.axis == 0:
+            if self.shuffle_axis == 0:
                 data_to_send[i] = \
                     self.partition_data.loc[indices_to_send[i], :]
-            elif self.axis == 1:
+            elif self.shuffle_axis == 1:
                 data_to_send[i] = \
                     self.partition_data.loc[:, indices_to_send[i]]
             else:
                 raise AssertionError('Axis must be 0 or 1. Got %s'
-                                     % str(self.axis))
+                                     % str(self.shuffle_axis))
 
         num_partitions = len(partition_assignments)
         # Reindexing here to properly drop the data.
@@ -150,7 +153,7 @@ class ShuffleActor(object):
         # After we drop the partition indices we use pd.concat with the axis
         # provided in the constructor.
         self.incoming = [x[1] for x in self.incoming]
-        data = pd.concat(self.incoming, axis=(self.axis ^ 1))
+        data = pd.concat(self.incoming, axis=(self.partition_axis ^ 1))
 
         if len(args) == 0:
             return func(data)

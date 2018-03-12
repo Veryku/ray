@@ -10,7 +10,7 @@ from threading import Thread
 @ray.remote(num_cpus=2)
 class ShuffleActor(object):
 
-    def __init__(self, partition_data, axis=1):
+    def __init__(self, partition_data, axis=0):
         self.incoming = []
         self.partition_data = partition_data
         self.index_of_self = None
@@ -65,7 +65,16 @@ class ShuffleActor(object):
             indices_to_send[i] = [idx
                                   for idx in partition_assignments[i]
                                   if idx in index.index]
-            data_to_send[i] = self.partition_data.loc[indices_to_send[i]]
+
+            if self.axis == 0:
+                data_to_send[i] = \
+                    self.partition_data.loc[indices_to_send[i], :]
+            elif self.axis == 1:
+                data_to_send[i] = \
+                    self.partition_data.loc[:, indices_to_send[i]]
+            else:
+                raise AssertionError('Axis must be 0 or 1. Got %s'
+                                     % str(self.axis))
 
         num_partitions = len(partition_assignments)
         # Reindexing here to properly drop the data.
@@ -122,7 +131,7 @@ class ShuffleActor(object):
         # After we drop the partition indices we use pd.concat with the axis
         # provided in the constructor.
         self.incoming = [x[1] for x in self.incoming]
-        data = pd.concat(self.incoming, axis=self.axis)
+        data = pd.concat(self.incoming, axis=(self.axis ^ 1))
 
         if len(args) == 0:
             return func(data)

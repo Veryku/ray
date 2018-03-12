@@ -547,39 +547,12 @@ class DataFrame(object):
         Returns:
             A new DataFrame transposed from this DataFrame.
         """
-        @ray.remote
-        def update_columns(df, columns):
-            df.columns = columns
-            return df
-
-        temp_index = [idx
-                      for _ in range(len(self._row_partitions))
-                      for idx in self.columns]
-        temp_columns = self.index
-        local_transpose = self._map_row_partitions(
-            lambda df: df.transpose(*args, **kwargs), index=temp_index)
-        local_transpose.columns = temp_columns
-
-        column_names = list(temp_columns)
-        x = [None] * len(self._lengths)
-        cumulative = np.cumsum(self._lengths)
-
-        for i in range(len(cumulative)):
-            if i == 0:
-                x[i] = (column_names[:cumulative[i]])
-            elif i == len(cumulative) - 1:
-                x[i] = column_names[cumulative[i - 1]:]
-            else:
-                x[i] = (column_names[cumulative[i-1]:cumulative[i]])
-
-        for i in range(len(local_transpose._row_partitions)):
-            local_transpose._row_partitions[i] = \
-                update_columns.remote(local_transpose._row_partitions[i], x[i])
-
-        df = local_transpose.groupby(by=local_transpose.index,
-                                     sort=False)\
-            .apply(lambda x: x)
-        return df
+        locally_transposed_rows = [_deploy_func.remote(lambda df: df.T, r)
+                                   for r in self._row_partitions]
+        locally_transposed_cols = [_deploy_func.remote(lambda df: df.T, c)
+                                   for c in self._col_partitions]
+        return DataFrame(row_partitions=locally_transposed_cols,
+                         col_partitions=locally_transposed_rows)
 
     T = property(transpose)
 

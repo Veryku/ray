@@ -174,6 +174,8 @@ def _rebuild_cols(row_partitions, index, columns):
 
     # TODO: Determine if this is the right place to reset the index
     def fix_indexes(df):
+        if df.empty:
+            return pd.DataFrame(index=index, columns=np.arange(len(df.columns)))
         df.index = index
         df.columns = np.arange(len(df.columns))
         return df
@@ -208,6 +210,7 @@ def _rebuild_rows(col_partitions, index, columns):
     ray.get(shufflers_done)
 
     # TODO: Determine if this is the right place to reset the index
+    # TODO: Determine if this needs the same changes as above
     def fix_indexes(df):
         df.columns = columns
         return df.reset_index(drop=True)

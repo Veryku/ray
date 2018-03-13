@@ -385,7 +385,7 @@ class DataFrame(object):
         """
         return (len(self.index), len(self.columns))
 
-    def _map_partitions(self, func, index=None, axis=0):
+    def _map_partitions(self, func, index=None, columns=None, axis=0):
         """Apply a function across the specified axis
 
         Args:
@@ -401,18 +401,23 @@ class DataFrame(object):
         if axis == 0:
             new_rows = [_deploy_func.remote(func, part) for part in
                         self._row_partitions]
+            # TODO: verify correct functionality
+            if index is None:
+                index = self.index
         elif axis == 1:
             new_cols = [_deploy_func.remote(func, part) for part in
                         self._col_partitions]
+            if columns is None:
+                columns = self.columns
         else:
             raise TypeError('shuffle_axis must be 0 or 1. Got %s' % str(axis))
 
         return DataFrame(row_partitions=new_rows,
                          col_partitions=new_cols,
                          index=index,
-                         columns=self.columns)
+                         columns=columns)
 
-    def _map_row_partitions(self, func, index=None):
+    def _map_row_partitions(self, func):
         """Apply a function on each row partition.
 
         Args:
@@ -589,11 +594,18 @@ class DataFrame(object):
         Returns:
             The sum of the DataFrame.
         """
+        # TODO: We don't support `level` right now, so df.sum always returns a pd.Series
+        #       Generalize when we support MultiIndexes, and distributed Series (?)
         if axis == 1:
             return self._map_partitions(
-                lambda df: df.sum(axis=axis, skipna=skipna, level=level,
-                                  numeric_only=numeric_only), axis=0)
+                    lambda df: df.sum(axis=axis,
+                                      skipna=skipna,
+                                      level=level,
+                                      numeric_only=numeric_only).to_frame(),
+                    axis=0,
+                    columns=pd.Index([0]))
 
+        # TODO: It's probably faster to do a _map_cols_partition instead of a transpose
         elif axis == 0 or axis is None:
             return self.T.sum(axis=1, skipna=skipna, level=level,
                               numeric_only=numeric_only)

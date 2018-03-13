@@ -27,6 +27,9 @@ from .utils import (
 from .shuffle import ShuffleActor
 from .groupby import DataFrameGroupBy
 from . import get_npartitions
+from .shuffle import ShuffleActor
+from .groupby import DataFrameGroupBy
+from . import get_npartitions
 
 
 class DataFrame(object):
@@ -64,27 +67,42 @@ class DataFrame(object):
             index = pd_df.index
 
         if col_partitions is None:
-            col_partitions = _rebuild_cols.remote(row_partitions, columns)
+            col_partitions = _rebuild_cols.remote(row_partitions, index, columns)
         if row_partitions is None:
-            row_partitions = _rebuild_rows.remote(col_partitions)
+            row_partitions = _rebuild_rows.remote(col_partitions, index)
 
-        self.columns = columns
         self._col_partitions = col_partitions
         self._row_partitions = row_partitions
 
         # this _index object is a pd.DataFrame
         # and we use that DataFrame's Index to index the rows.
-        self._lengths, self._index = \
+        self._row_lengths, self._row_index = \
             _compute_length_and_index.remote(self._row_partitions)
+        self._col_lengths, self._col_index = \
+            _compute_width_and_index.remote(self._col_partitions)
+
+        # TODO: Remove testing print code comments
+        # print("row partitions")
+        # for x in ray.get(self._row_partitions):
+        #     print(x)
+        # print("col partitions")
+        # for x in ray.get(self._col_partitions):
+        #     print(x)
+        # print("row items")
+        # print(self._row_lengths, "\n", self._row_index)
+        # print("col items")
+        # print(self._col_lengths, "\n", self._col_index)
 
         if index is not None:
             self.index = index
+
+        self.columns = columns
 
     def __str__(self):
         return repr(self)
 
     def __repr__(self):
-        if sum(self._lengths) < 40:
+        if sum(self._row_lengths) < 40:
             result = repr(to_pandas(self))
             return result
 
@@ -143,7 +161,7 @@ class DataFrame(object):
         Returns:
             The union of all indexes across the partitions.
         """
-        return self._index.index
+        return self._row_index.index
 
     def _set_index(self, new_index):
         """Set the index for this DataFrame.
@@ -151,51 +169,89 @@ class DataFrame(object):
         Args:
             new_index: The new index to set this
         """
-        self._index.index = new_index
+        self._row_index.index = new_index
 
     index = property(_get_index, _set_index)
 
-    def _get__index(self):
-        """Get the _index for this DataFrame.
+    def _get__row_index(self):
+        """Get the _row_index for this DataFrame.
 
         Returns:
             The default index.
         """
-        if isinstance(self._index_cache, ray.local_scheduler.ObjectID):
-            self._index_cache = ray.get(self._index_cache)
-        return self._index_cache
+        if isinstance(self._row_index_cache, ray.local_scheduler.ObjectID):
+            self._row_index_cache = ray.get(self._row_index_cache)
+        return self._row_index_cache
 
-    def _set__index(self, new__index):
-        """Set the _index for this DataFrame.
+    def _set__row_index(self, new__index):
+        """Set the _row_index for this DataFrame.
 
         Args:
             new__index: The new default index to set.
         """
-        self._index_cache = new__index
+        self._row_index_cache = new__index
 
-    _index = property(_get__index, _set__index)
+    _row_index = property(_get__row_index, _set__row_index)
 
-    def _compute_lengths(self):
+    def _get_columns(self):
+        """Get the columns for this DataFrame.
+
+        Returns:
+            The union of all indexes across the partitions.
+        """
+        return self._col_index.index
+
+    def _set_columns(self, new_index):
+        """Set the columns for this DataFrame.
+
+        Args:
+            new_index: The new index to set this
+        """
+        self._col_index.index = new_index
+
+    columns = property(_get_columns, _set_columns)
+
+    def _get__col_index(self):
+        """Get the _col_index for this DataFrame.
+
+        Returns:
+            The default index.
+        """
+        if isinstance(self._col_index_cache, ray.local_scheduler.ObjectID):
+            self._col_index_cache = ray.get(self._col_index_cache)
+        return self._col_index_cache
+
+    def _set__col_index(self, new__index):
+        """Set the _col_index for this DataFrame.
+
+        Args:
+            new__index: The new default index to set.
+        """
+        self._col_index_cache = new__index
+
+    _col_index = property(_get__col_index, _set__col_index)
+
+    def _compute_row_lengths(self):
         """Updates the stored lengths of DataFrame partions
         """
-        self._lengths = [_deploy_func.remote(_get_lengths, d)
-                         for d in self._row_partitions]
+        self._row_lengths = [_deploy_func.remote(_get_row_lengths, d)
+                             for d in self._row_partitions]
 
-    def _get_lengths(self):
+    def _get_row_lengths(self):
         """Gets the lengths for each partition and caches it if it wasn't.
 
         Returns:
             A list of integers representing the length of each partition.
         """
-        if isinstance(self._length_cache, ray.local_scheduler.ObjectID):
-            self._length_cache = ray.get(self._length_cache)
-        elif isinstance(self._length_cache, list) and \
-                isinstance(self._length_cache[0],
+        if isinstance(self._row_length_cache, ray.local_scheduler.ObjectID):
+            self._row_length_cache = ray.get(self._row_length_cache)
+        elif isinstance(self._row_length_cache, list) and \
+                isinstance(self._row_length_cache[0],
                            ray.local_scheduler.ObjectID):
-            self._length_cache = ray.get(self._length_cache)
-        return self._length_cache
+            self._row_length_cache = ray.get(self._row_length_cache)
+        return self._row_length_cache
 
-    def _set_lengths(self, lengths):
+    def _set_row_lengths(self, lengths):
         """Sets the lengths of each partition for this DataFrame.
 
         We use this because we can compute it when creating the DataFrame.
@@ -204,9 +260,42 @@ class DataFrame(object):
             lengths ([ObjectID or Int]): A list of lengths for each
                 partition, in order.
         """
-        self._length_cache = lengths
+        self._row_length_cache = lengths
 
-    _lengths = property(_get_lengths, _set_lengths)
+    _row_lengths = property(_get_row_lengths, _set_row_lengths)
+
+    def _compute_col_lengths(self):
+        """Updates the stored lengths of DataFrame partions
+        """
+        self._col_lengths = [_deploy_func.remote(_get_col_lengths, d)
+                             for d in self._col_partitions]
+
+    def _get_col_lengths(self):
+        """Gets the lengths for each partition and caches it if it wasn't.
+
+        Returns:
+            A list of integers representing the length of each partition.
+        """
+        if isinstance(self._col_length_cache, ray.local_scheduler.ObjectID):
+            self._col_length_cache = ray.get(self._col_length_cache)
+        elif isinstance(self._col_length_cache, list) and \
+                isinstance(self._col_length_cache[0],
+                           ray.local_scheduler.ObjectID):
+            self._col_length_cache = ray.get(self._col_length_cache)
+        return self._col_length_cache
+
+    def _set_col_lengths(self, lengths):
+        """Sets the lengths of each partition for this DataFrame.
+
+        We use this because we can compute it when creating the DataFrame.
+
+        Args:
+            lengths ([ObjectID or Int]): A list of lengths for each
+                partition, in order.
+        """
+        self._col_length_cache = lengths
+
+    _col_lengths = property(_get_col_lengths, _set_col_lengths)
 
     @property
     def size(self):
@@ -338,7 +427,7 @@ class DataFrame(object):
         if columns is not None:
             self.columns = columns
 
-        self._lengths, self._index = \
+        self._row_lengths, self._row_index = \
             _compute_length_and_index.remote(self._row_partitions)
 
         if index is not None:
@@ -428,10 +517,10 @@ class DataFrame(object):
         # Begin groupby for rows. Requires shuffle.
         # We perform the groupby on the index first to assign the partitions
         # for the shuffle.
-        assignments_df = self._index.groupby(by=by, axis=axis, level=level,
-                                             as_index=as_index, sort=sort,
-                                             group_keys=group_keys,
-                                             squeeze=squeeze, **kwargs)\
+        assignments_df = self._row_index.groupby(by=by, axis=axis, level=level,
+                                                 as_index=as_index, sort=sort,
+                                                 group_keys=group_keys,
+                                                 squeeze=squeeze, **kwargs)\
             .apply(lambda x: x[:])
 
         # We did a groupby, now we have to drop the outermost layer of the
@@ -444,7 +533,7 @@ class DataFrame(object):
 
         shuffles_done = \
             [shufflers[i].shuffle.remote(
-                self._index[self._index['partition'] == i],
+                self._row_index[self._row_index['partition'] == i],
                 partition_assignments,
                 i,
                 *shufflers)
@@ -558,7 +647,9 @@ class DataFrame(object):
         locally_transposed_cols = [_deploy_func.remote(lambda df: df.T, c)
                                    for c in self._col_partitions]
         return DataFrame(row_partitions=locally_transposed_cols,
-                         col_partitions=locally_transposed_rows)
+                         col_partitions=locally_transposed_rows,
+                         index=self.columns,
+                         columns=self.index)
 
     T = property(transpose)
 
@@ -899,9 +990,9 @@ class DataFrame(object):
                                 return
                             else:
                                 return self
-                        filtered_index = self._index.loc[list(values)]
+                        filtered_index = self._row_index.loc[list(values)]
                     except TypeError:
-                        filtered_index = self._index.loc[[values]]
+                        filtered_index = self._row_index.loc[[values]]
                 except KeyError:
                     raise ValueError(
                         "{} is not contained in the index".format(labels))
@@ -923,7 +1014,7 @@ class DataFrame(object):
                     )
                     for i in range(len(self._row_partitions))
                 ]
-                new_index = self._index.copy().drop(values, errors=errors)
+                new_index = self._row_index.copy().drop(values, errors=errors)
                 new_df = DataFrame(row_partitions=new_df, columns=self.columns,
                                    index=new_index.index)
         except (ValueError, KeyError):
@@ -984,14 +1075,14 @@ class DataFrame(object):
         results = []
         other_partition = None
         other_df = None
-        for i, idx in other._index.iterrows():
+        for i, idx in other._row_index.iterrows():
             if idx['partition'] != other_partition:
                 other_df = ray.get(other._row_partitions[idx['partition']])
                 other_partition = idx['partition']
             # TODO: group series here into full df partitions to reduce
             # the number of remote calls to helper
             other_series = other_df.iloc[idx['index_within_partition']]
-            curr_index = self._index.iloc[i]
+            curr_index = self._row_index.iloc[i]
             curr_df = self._row_partitions[int(curr_index['partition'])]
             results.append(_deploy_func.remote(helper,
                                                curr_df,
@@ -1130,8 +1221,8 @@ class DataFrame(object):
             raise ValueError(msg)
 
         partition_idx = [
-            self._index.loc[
-                self._index['partition'] == i
+            self._row_index.loc[
+                self._row_index['partition'] == i
             ].index
             for i in range(len(self._row_partitions))
         ]
@@ -1225,7 +1316,7 @@ class DataFrame(object):
         Returns:
             scalar: type of index
         """
-        idx = self._index
+        idx = self._row_index
         if (idx is not None):
             return idx.first_valid_index()
         return None
@@ -1331,7 +1422,7 @@ class DataFrame(object):
         Returns:
             A new dataframe with the first n rows of the dataframe.
         """
-        sizes = self._lengths
+        sizes = self._row_lengths
 
         if n >= sum(sizes):
             return self
@@ -1352,7 +1443,7 @@ class DataFrame(object):
         new_dfs.append(_deploy_func.remote(lambda df: df.head(num_to_transfer),
                                            self._row_partitions[last_index]))
 
-        index = self._index.head(n).index
+        index = self._row_index.head(n).index
         return DataFrame(row_partitions=new_dfs,
                          columns=self.columns,
                          index=index)
@@ -1442,7 +1533,7 @@ class DataFrame(object):
             raise ValueError(
                 "Column {} already exists in DataFrame.".format(column))
 
-        cumulative = np.cumsum(self._lengths)
+        cumulative = np.cumsum(self._row_lengths)
         partitions = [value[cumulative[i-1]:cumulative[i]]
                       for i in range(len(cumulative))
                       if i != 0]
@@ -1587,7 +1678,7 @@ class DataFrame(object):
         Returns:
             scalar: type of index
         """
-        idx = self._index
+        idx = self._row_index
         if (idx is not None):
             return idx.last_valid_index()
         return None
@@ -2162,7 +2253,7 @@ class DataFrame(object):
                 FutureWarning, stacklevel=2)
             inplace = True
         if inplace:
-            setattr(self, self._index._get_axis_name(axis), labels)
+            setattr(self, self._row_index._get_axis_name(axis), labels)
         else:
             obj = self.copy()
             obj.set_axis(labels, axis=axis, inplace=True)
@@ -2331,7 +2422,7 @@ class DataFrame(object):
         Returns:
             A new dataframe with the last n rows of this dataframe.
         """
-        sizes = self._lengths
+        sizes = self._row_lengths
 
         if n >= sum(sizes):
             return self
@@ -2356,7 +2447,7 @@ class DataFrame(object):
 
         new_dfs.reverse()
 
-        index = self._index.tail(n).index
+        index = self._row_index.tail(n).index
         return DataFrame(row_partitions=new_dfs,
                          columns=self.columns,
                          index=index)
@@ -2595,7 +2686,7 @@ class DataFrame(object):
         Returns:
             Returns an integer length of the dataframe object.
         """
-        return sum(self._lengths)
+        return sum(self._row_lengths)
 
     def __unicode__(self):
         raise NotImplementedError(

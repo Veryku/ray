@@ -204,7 +204,7 @@ def _local_groupby(df_rows, axis=0):
 
 @ray.remote
 def _deploy_func(func, dataframe, *args):
-    """Deploys a function for the _map_row_partitions call.
+    """Deploys a function for the _map_partitions call.
     Args:
         dataframe (pandas.DataFrame): The pandas DataFrame for this partition.
     Returns:

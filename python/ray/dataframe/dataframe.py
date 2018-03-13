@@ -418,18 +418,29 @@ class DataFrame(object):
         return DataFrame(col_partitions=new_col_partitions,
                          columns=self.columns)
 
-    def _update_inplace(self, df=None, columns=None, index=None):
+    def _update_inplace(self, row_partitions=None, col_partitions=None,
+                        columns=None, index=None):
         """Updates the current DataFrame inplace
         """
-        assert(len(df) > 0)
+        if row_partitions is not None and col_partitions is not None:
+            self._row_partitions = row_partitions
+            self._col_partitions = col_partitions
 
-        if df is not None:
-            self._row_partitions = df
+        if row_partitions is not None:
+            self._row_partitions = row_partitions
+            _rebuild_cols(self._row_partitions, index, columns)
+
+        if col_partitions is not None:
+            self._col_partitions = col_partitions
+            _rebuild_rows(self._col_partitions, index)
+
         if columns is not None:
             self.columns = columns
 
         self._row_lengths, self._row_index = \
             _compute_length_and_index.remote(self._row_partitions)
+        self._col_lengths, self._col_index = \
+            _compute_width_and_index.remote(self._col_partitions)
 
         if index is not None:
             self.index = index
@@ -497,8 +508,6 @@ class DataFrame(object):
         elif not as_index and axis == 1 or axis == 'columns':
             raise ValueError("as_index=False only valid for axis=0")
 
-        # The easy one. Everything for columns can be handled by the
-        # partitions.
         if axis == 1 or axis == 'columns':
             if sort:
                 new_cols = sorted(self.columns)
@@ -515,7 +524,6 @@ class DataFrame(object):
                                       **kwargs))._row_partitions],
                                     new_cols, self.index)
 
-        # Begin groupby for rows. Requires shuffle.
         # We perform the groupby on the index first to assign the partitions
         # for the shuffle.
         assignments_df = self._row_index.groupby(by=by, axis=axis, level=level,
@@ -527,34 +535,19 @@ class DataFrame(object):
         # We did a groupby, now we have to drop the outermost layer of the
         # grouped index to get the index we will use.
         assignments_df.index = assignments_df.index.droplevel()
-        partition_assignments = assign_partitions.remote(assignments_df,
-                                                         len(self._row_partitions))
-        shufflers = [ShuffleActor.remote(self._row_partitions[i])
-                     for i in range(len(self._row_partitions))]
-
-        shuffles_done = \
-            [shufflers[i].shuffle.remote(
-                self._row_index[self._row_index['partition'] == i],
-                partition_assignments,
-                i,
-                *shufflers)
-             for i in range(len(shufflers))]
 
         if as_index:
             new_index = assignments_df.index.unique()
         else:
             new_index = self.index
 
-        ray.get(shuffles_done)
-
-        return DataFrameGroupBy([shuffler.apply_func.remote(
+        return DataFrameGroupBy([self._map_col_partitions(
             lambda df: df.groupby(by=df.index,
                                   axis=axis,
                                   sort=sort,
                                   group_keys=group_keys,
                                   squeeze=squeeze,
-                                  **kwargs))
-                                for shuffler in shufflers],
+                                  **kwargs))._col_partitions],
                                 self.columns, new_index)
 
     def sum(self, axis=None, skipna=True, level=None, numeric_only=None):

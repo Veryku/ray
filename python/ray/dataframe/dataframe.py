@@ -641,7 +641,9 @@ class DataFrame(object):
         locally_transposed_cols = [_deploy_func.remote(lambda df: df.T, c)
                                    for c in self._col_partitions]
         return DataFrame(row_partitions=locally_transposed_cols,
-                         col_partitions=locally_transposed_rows)
+                         col_partitions=locally_transposed_rows,
+                         index=self.columns,
+                         columns=self.index)
 
     T = property(transpose)
 

@@ -77,34 +77,6 @@ def _get_widths(df):
         return 0
 
 
-@ray.remote
-def _local_groupby(df_rows, axis=0):
-    """Apply a groupby on this partition for the blocks sent to it.
-    Args:
-        df_rows ([pd.DataFrame]): A list of dataframes for this partition. Goes
-            through the Ray object store.
-    Returns:
-        A DataFrameGroupBy object from the resulting groupby.
-    """
-    concat_df = pd.concat(df_rows, axis=axis)
-    return concat_df.groupby(concat_df.index)
-
-
-@ray.remote
-def _deploy_func(func, dataframe, *args):
-    """Deploys a function for the _map_row_partitions call.
-    Args:
-        dataframe (pandas.DataFrame): The pandas DataFrame for this partition.
-    Returns:
-        A futures object representing the return value of the function
-        provided.
-    """
-    if len(args) == 0:
-        return func(dataframe)
-    else:
-        return func(dataframe, *args)
-
-
 def _partition_pandas_dataframe(df, npartitions=None, chunksize=None):
     """Partitions a Pandas DataFrame object.
     Args:
@@ -215,6 +187,34 @@ def _rebuild_rows(col_partitions):
         [ObjectID]: List of new row Partitions.
     """
     return []
+
+
+@ray.remote
+def _local_groupby(df_rows, axis=0):
+    """Apply a groupby on this partition for the blocks sent to it.
+    Args:
+        df_rows ([pd.DataFrame]): A list of dataframes for this partition. Goes
+            through the Ray object store.
+    Returns:
+        A DataFrameGroupBy object from the resulting groupby.
+    """
+    concat_df = pd.concat(df_rows, axis=axis)
+    return concat_df.groupby(concat_df.index)
+
+
+@ray.remote
+def _deploy_func(func, dataframe, *args):
+    """Deploys a function for the _map_row_partitions call.
+    Args:
+        dataframe (pandas.DataFrame): The pandas DataFrame for this partition.
+    Returns:
+        A futures object representing the return value of the function
+        provided.
+    """
+    if len(args) == 0:
+        return func(dataframe)
+    else:
+        return func(dataframe, *args)
 
 
 @ray.remote(num_return_vals=2)

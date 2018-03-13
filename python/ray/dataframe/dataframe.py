@@ -23,6 +23,7 @@ from .utils import (
     _get_widths,
     _local_groupby,
     _deploy_func,
+    _partition_pandas_dataframe,
     to_pandas,
     _rebuild_cols,
     _rebuild_rows,

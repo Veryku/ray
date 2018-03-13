@@ -3,15 +3,52 @@ from __future__ import division
 from __future__ import print_function
 
 import pandas as pd
+import numpy as np
 import ray
+
+from .shuffle import ShuffleActor
+
+
+@ray.remote
+def assign_partitions(index, num_partitions):
+    """Generates a partition assignment based on a dataframe index
+    Args:
+        index (pandas.DataFrame or pandas.Index):
+            The index of the DataFrame to partition. This can either be a pandas DataFrame,
+            in which it will represent the RangeIndex of a to-be partitioned ray DataFrame,
+            or a pandas Index, in which it will represent the index of a to-be partition 
+            pandas DataFrame.
+        num_partitions (int):
+            The number of partitions to generate assignments for.
+    Returns ([pandas.Index]):
+        List of indexes that will be sent to each partition
+    """
+    if isinstance(index, pd.DataFrame):
+        uniques = index.index.unique()
+    elif isinstance(index, pd.Index):
+        uniques = index.unique()
+
+    if len(uniques) % num_partitions == 0:
+        chunksize = int(len(uniques) / num_partitions)
+    else:
+        chunksize = int(len(uniques) / num_partitions) + 1
+
+    assignments = []
+
+    while len(uniques) > chunksize:
+        temp_idx = uniques[:chunksize]
+        assignments.append(temp_idx)
+        uniques = uniques[chunksize:]
+    else:
+        assignments.append(uniques)
+
+    return assignments
 
 
 def _get_lengths(df):
     """Gets the length of the dataframe.
-
     Args:
         df: A remote pd.DataFrame object.
-
     Returns:
         Returns an integer length of the dataframe object. If the attempt
             fails, returns 0 as the length.
@@ -24,95 +61,28 @@ def _get_lengths(df):
         return 0
 
 
-def from_pandas(df, npartitions=None, chunksize=None):
-    """Converts a pandas DataFrame to a Ray DataFrame.
-
+def _get_widths(df):
+    """Gets the width (number of columns) of the dataframe.
     Args:
-        df (pandas.DataFrame): The pandas DataFrame to convert.
-        npartitions (int): The number of partitions to split the DataFrame
-            into. Has priority over chunksize.
-        chunksize (int): The number of rows to put in each partition.
-
+        df: A remote pd.DataFrame object.
     Returns:
-        A new Ray DataFrame object.
+        Returns an integer width of the dataframe object. If the attempt
+            fails, returns 0 as the length.
     """
-    from .dataframe import DataFrame
-
-    if npartitions is not None:
-        chunksize = int(len(df) / npartitions)
-    elif chunksize is None:
-        raise ValueError("The number of partitions or chunksize must be set.")
-
-    temp_df = df
-
-    dataframes = []
-    lengths = []
-    while len(temp_df) > chunksize:
-        t_df = temp_df[:chunksize]
-        lengths.append(len(t_df))
-        # reset_index here because we want a pd.RangeIndex
-        # within the partitions. It is smaller and sometimes faster.
-        t_df = t_df.reset_index(drop=True)
-        top = ray.put(t_df)
-        dataframes.append(top)
-        temp_df = temp_df[chunksize:]
-    else:
-        temp_df = temp_df.reset_index(drop=True)
-        dataframes.append(ray.put(temp_df))
-        lengths.append(len(temp_df))
-
-    return DataFrame(dataframes, df.columns, index=df.index)
-
-
-def to_pandas(df):
-    """Converts a Ray DataFrame to a pandas DataFrame/Series.
-
-    Args:
-        df (ray.DataFrame): The Ray DataFrame to convert.
-
-    Returns:
-        A new pandas DataFrame.
-    """
-    pd_df = pd.concat(ray.get(df._df))
-    pd_df.index = df.index
-    pd_df.columns = df.columns
-    return pd_df
-
-
-@ray.remote
-def _shuffle(df, indices, chunksize):
-    """Shuffle data by sending it through the Ray Store.
-
-    Args:
-        df (pd.DataFrame): The pandas DataFrame to shuffle.
-        indices ([any]): The list of indices for the DataFrame.
-        chunksize (int): The number of indices to send.
-
-    Returns:
-        The list of pd.DataFrame objects in order of their assignment. This
-        order is important because it determines which task will get the data.
-    """
-    i = 0
-    partition = []
-    while len(indices) > chunksize:
-        oids = df.reindex(indices[:chunksize])
-        partition.append(oids)
-        indices = indices[chunksize:]
-        i += 1
-    else:
-        oids = df.reindex(indices)
-        partition.append(oids)
-    return partition
+    try:
+        return len(df.columns)
+    # Because we sometimes have cases where we have summary statistics in our
+    # DataFrames
+    except TypeError:
+        return 0
 
 
 @ray.remote
 def _local_groupby(df_rows, axis=0):
     """Apply a groupby on this partition for the blocks sent to it.
-
     Args:
         df_rows ([pd.DataFrame]): A list of dataframes for this partition. Goes
             through the Ray object store.
-
     Returns:
         A DataFrameGroupBy object from the resulting groupby.
     """
@@ -122,11 +92,9 @@ def _local_groupby(df_rows, axis=0):
 
 @ray.remote
 def _deploy_func(func, dataframe, *args):
-    """Deploys a function for the _map_partitions call.
-
+    """Deploys a function for the _map_row_partitions call.
     Args:
         dataframe (pandas.DataFrame): The pandas DataFrame for this partition.
-
     Returns:
         A futures object representing the return value of the function
         provided.
@@ -137,21 +105,147 @@ def _deploy_func(func, dataframe, *args):
         return func(dataframe, *args)
 
 
+def _partition_pandas_dataframe(df, npartitions=None, chunksize=None):
+    """Partitions a Pandas DataFrame object.
+    Args:
+        df (pandas.DataFrame): The pandas DataFrame to convert.
+        npartitions (int): The number of partitions to split the DataFrame
+            into. Has priority over chunksize.
+        chunksize (int): The number of rows to put in each partition.
+    Returns:
+        [ObjectID]: A list of object IDs corresponding to the dataframe
+        partitions
+    """
+    if npartitions is not None:
+        chunksize = len(df) // npartitions + 1
+    elif chunksize is None:
+        raise ValueError("The number of partitions or chunksize must be set.")
+
+    temp_df = df
+
+    dataframes = []
+    while len(temp_df) > chunksize:
+        t_df = temp_df[:chunksize]
+        # reset_index here because we want a pd.RangeIndex
+        # within the partitions. It is smaller and sometimes faster.
+        t_df = t_df.reset_index(drop=True)
+        top = ray.put(t_df)
+        dataframes.append(top)
+        temp_df = temp_df[chunksize:]
+    else:
+        temp_df = temp_df.reset_index(drop=True)
+        dataframes.append(ray.put(temp_df))
+
+    return dataframes
+
+
+def from_pandas(df, npartitions=None, chunksize=None):
+    """Converts a pandas DataFrame to a Ray DataFrame.
+    Args:
+        df (pandas.DataFrame): The pandas DataFrame to convert.
+        npartitions (int): The number of partitions to split the DataFrame
+            into. Has priority over chunksize.
+        chunksize (int): The number of rows to put in each partition.
+    Returns:
+        A new Ray DataFrame object.
+    """
+    from .dataframe import DataFrame
+
+    dataframes = _partition_pandas_dataframe(df, npartitions, chunksize)
+
+    return DataFrame(row_partitions=dataframes,
+                     columns=df.columns,
+                     index=df.index)
+
+
+def to_pandas(df):
+    """Converts a Ray DataFrame to a pandas DataFrame/Series.
+    Args:
+        df (ray.DataFrame): The Ray DataFrame to convert.
+    Returns:
+        A new pandas DataFrame.
+    """
+    pd_df = pd.concat(ray.get(df._row_partitions))
+    pd_df.index = df.index
+    pd_df.columns = df.columns
+    return pd_df
+
+
+@ray.remote
+def _rebuild_cols(row_partitions, index, columns):
+    """Rebuild the column partitions from the row partitions.
+    Args:
+        row_partitions ([ObjectID]): List of row partitions for the dataframe.
+        index (pd.Index): The row index of the entire dataframe.
+        columns (pd.Index): The column labels of the entire dataframe.
+    Returns:
+        [ObjectID]: List of new column partitions.
+    """
+    partition_assignments = assign_partitions.remote(columns,
+                                                     len(row_partitions))
+    shufflers = [ShuffleActor.remote(x, partition_axis=0, shuffle_axis=1)
+                 for x in row_partitions]
+
+    shufflers_done = \
+        [shufflers[i].shuffle.remote(
+            columns,
+            partition_assignments,
+            i,
+            *shufflers)
+         for i in range(len(shufflers))]
+
+    # Block on all shuffles being complete
+    ray.get(shufflers_done)
+
+    # TODO: Determine if this is the right place to reset the index
+    def fix_indexes(df):
+        df.index = index
+        df.columns = np.arange(len(df.columns))
+        return df
+
+    return [shuffler.apply_func.remote(fix_indexes) for shuffler in shufflers]
+
+
+@ray.remote
+def _rebuild_rows(col_partitions):
+    """Rebuild the row partitions from the column partitions.
+    Args:
+        col_partitions ([ObjectID]): List of col partitions for the dataframe.
+    Returns:
+        [ObjectID]: List of new row Partitions.
+    """
+    return []
+
+
 @ray.remote(num_return_vals=2)
 def _compute_length_and_index(dfs):
     """Create a default index, which is a RangeIndex
-
     Returns:
         The pd.RangeIndex object that represents this DataFrame.
     """
     lengths = ray.get([_deploy_func.remote(_get_lengths, d)
                        for d in dfs])
 
-    dest_indices = {"partition":
-                    [i for i in range(len(lengths))
-                     for j in range(lengths[i])],
-                    "index_within_partition":
-                    [j for i in range(len(lengths))
-                     for j in range(lengths[i])]}
+    dest_indices = [(p_idx, p_sub_idx) for p_idx in range(len(lengths))
+                    for p_sub_idx in range(lengths[p_idx])]
 
-    return lengths, pd.DataFrame(dest_indices)
+    idx_df_col_names = ("partition", "index_within_partition")
+
+    return lengths, pd.DataFrame(dest_indices, columns=idx_df_col_names)
+
+
+@ray.remote(num_return_vals=2)
+def _compute_width_and_index(dfs):
+    """Create a default index, which is a RangeIndex
+    Returns:
+        The pd.RangeIndex object that represents this DataFrame.
+    """
+    widths = ray.get([_deploy_func.remote(_get_widths, d)
+                      for d in dfs])
+
+    dest_indices = [(p_idx, p_sub_idx) for p_idx in range(len(widths))
+                    for p_sub_idx in range(widths[p_idx])]
+
+    idx_df_col_names = ("partition", "index_within_partition")
+
+    return widths, pd.DataFrame(dest_indices, columns=idx_df_col_names)

@@ -18,15 +18,16 @@ import numpy as np
 import ray
 import itertools
 from .utils import (
+    assign_partitions,
     _get_lengths,
-    to_pandas,
-    _shuffle,
+    _get_widths,
     _local_groupby,
     _deploy_func,
-    _compute_length_and_index)
-from .shuffle import ShuffleActor
-from .groupby import DataFrameGroupBy
-from . import get_npartitions
+    to_pandas,
+    _rebuild_cols,
+    _rebuild_rows,
+    _compute_length_and_index,
+    _compute_width_and_index)
 from .shuffle import ShuffleActor
 from .groupby import DataFrameGroupBy
 from . import get_npartitions

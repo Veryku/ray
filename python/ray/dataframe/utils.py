@@ -27,6 +27,9 @@ def assign_partitions(index, num_partitions):
         uniques = index.index.unique()
     elif isinstance(index, pd.Index):
         uniques = index.unique()
+    else:
+        raise TypeError("Unexpected value of type {0} assigned to ShuffleActor"
+                        .format(type(index).__name__))
 
     if len(uniques) % num_partitions == 0:
         chunksize = int(len(uniques) / num_partitions)
@@ -210,6 +213,7 @@ def _rebuild_rows(col_partitions, index, columns):
         return df.reset_index(drop=True)
 
     return [shuffler.apply_func.remote(fix_indexes) for shuffler in shufflers]
+
 
 @ray.remote
 def _local_groupby(df_rows, axis=0):

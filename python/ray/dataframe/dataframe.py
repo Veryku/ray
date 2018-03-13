@@ -24,6 +24,7 @@ from .utils import (
     _local_groupby,
     _deploy_func,
     _partition_pandas_dataframe,
+    from_pandas,
     to_pandas,
     _rebuild_cols,
     _rebuild_rows,
@@ -353,7 +354,7 @@ class DataFrame(object):
             False otherwise.
         """
         all_empty = ray.get(self._map_row_partitions(
-            lambda df: df.empty)._row_partitions)
+            lambda df: df.empty))
         return False not in all_empty
 
     @property
@@ -364,7 +365,7 @@ class DataFrame(object):
             The numpy representation of this DataFrame.
         """
         return np.concatenate(ray.get(self._map_row_partitions(
-            lambda df: df.values)._row_partitions))
+            lambda df: df.values)))
 
     @property
     def axes(self):
@@ -384,6 +385,33 @@ class DataFrame(object):
         """
         return (len(self.index), len(self.columns))
 
+    def _map_partitions(self, func, index=None, axis=0):
+        """Apply a function across the specified axis
+
+        Args:
+            func(callable): The function to apply
+
+        Returns:
+            A new Dataframe containing the result of the function
+        """
+        assert(callable(func))
+        new_rows = None
+        new_cols = None
+
+        if axis == 0:
+            new_rows = [_deploy_func.remote(func, part) for part in
+                        self._row_partitions]
+        elif axis == 1:
+            new_cols = [_deploy_func.remote(func, part) for part in
+                        self._col_partitions]
+        else:
+            raise TypeError('shuffle_axis must be 0 or 1. Got %s' % str(axis))
+
+        return DataFrame(row_partitions=new_rows,
+                         col_partitions=new_cols,
+                         index=index,
+                         columns=self.columns)
+
     def _map_row_partitions(self, func, index=None):
         """Apply a function on each row partition.
 
@@ -391,17 +419,14 @@ class DataFrame(object):
             func (callable): The function to Apply.
 
         Returns:
-            A new DataFrame containing the result of the function.
+            [ObjectID] corresponding to the new row partitions as a result of
+            applying the function.
         """
         assert(callable(func))
         new_rows = [_deploy_func.remote(func, part) for part in
                     self._row_partitions]
-        if index is None:
-            index = self.index
 
-        return DataFrame(row_partitions=new_rows,
-                         columns=self.columns,
-                         index=index)
+        return new_rows
 
     def _map_col_partitions(self, func):
         """Apply a function on each column partition.
@@ -410,14 +435,14 @@ class DataFrame(object):
             func (callable): The function to apply.
 
         Returns:
-            A new DataFrame containing the result of the function.
+            [ObjectID] corresponding to the new column partitions as a result of
+            applying the function.
         """
         assert(callable(func))
-        new_col_partitions = [_deploy_func.remote(func, part) for part in
-                              self._col_partitions]
+        new_cols = [_deploy_func.remote(func, part) for part in
+                    self._col_partitions]
 
-        return DataFrame(col_partitions=new_col_partitions,
-                         columns=self.columns)
+        return new_cols
 
     def _update_inplace(self, row_partitions=None, col_partitions=None,
                         columns=None, index=None):
@@ -429,11 +454,14 @@ class DataFrame(object):
 
         if row_partitions is not None:
             self._row_partitions = row_partitions
-            _rebuild_cols(self._row_partitions, index, columns)
+            self._col_partitions = _rebuild_cols.remote(self._row_partitions,
+                                                        index,
+                                                        columns)
 
         if col_partitions is not None:
             self._col_partitions = col_partitions
-            _rebuild_rows(self._col_partitions, index)
+            self._row_partitions = _rebuild_rows.remote(self._col_partitions,
+                                                        index)
 
         if columns is not None:
             self.columns = columns
@@ -475,7 +503,7 @@ class DataFrame(object):
             func (callable): The function to apply.
         """
         assert(callable(func))
-        return self._map_row_partitions(
+        return self._map_partitions(
             lambda df: df.applymap(lambda x: func(x)))
 
     def copy(self, deep=True):
@@ -522,7 +550,7 @@ class DataFrame(object):
                                       sort=sort,
                                       group_keys=group_keys,
                                       squeeze=squeeze,
-                                      **kwargs))._row_partitions],
+                                      **kwargs))],
                                     new_cols, self.index)
 
         # We perform the groupby on the index first to assign the partitions
@@ -548,7 +576,7 @@ class DataFrame(object):
                                   sort=sort,
                                   group_keys=group_keys,
                                   squeeze=squeeze,
-                                  **kwargs))._col_partitions],
+                                  **kwargs))],
                                 self.columns, new_index)
 
     def sum(self, axis=None, skipna=True, level=None, numeric_only=None):
@@ -562,9 +590,9 @@ class DataFrame(object):
             The sum of the DataFrame.
         """
         if axis == 1:
-            return self._map_row_partitions(
+            return self._map_partitions(
                 lambda df: df.sum(axis=axis, skipna=skipna, level=level,
-                                  numeric_only=numeric_only))
+                                  numeric_only=numeric_only), axis=0)
 
         elif axis == 0 or axis is None:
             return self.T.sum(axis=1, skipna=skipna, level=level,
@@ -582,7 +610,7 @@ class DataFrame(object):
             if np.dtype('O') == t:
                 # TODO Give a more accurate error to Pandas
                 raise TypeError("bad operand type for abs():", "str")
-        return self._map_row_partitions(lambda df: df.abs())
+        return self._map_partitions(lambda df: df.abs())
 
     def isin(self, values):
         """Fill a DataFrame with booleans for cells contained in values.
@@ -596,7 +624,7 @@ class DataFrame(object):
             True: cell is contained in values.
             False: otherwise
         """
-        return self._map_row_partitions(lambda df: df.isin(values))
+        return self._map_partitions(lambda df: df.isin(values))
 
     def isna(self):
         """Fill a DataFrame with booleans for cells containing NA.
@@ -607,7 +635,7 @@ class DataFrame(object):
             True: cell contains NA.
             False: otherwise.
         """
-        return self._map_row_partitions(lambda df: df.isna())
+        return self._map_partitions(lambda df: df.isna())
 
     def isnull(self):
         """Fill a DataFrame with booleans for cells containing a null value.
@@ -618,7 +646,7 @@ class DataFrame(object):
             True: cell contains null.
             False: otherwise.
         """
-        return self._map_row_partitions(lambda df: df.isnull)
+        return self._map_partitions(lambda df: df.isnull)
 
     def keys(self):
         """Get the info axis for the DataFrame.
@@ -704,11 +732,11 @@ class DataFrame(object):
         else:
             df = self
 
-        mapped = df._map_row_partitions(lambda df: df.all(axis,
-                                                          bool_only,
-                                                          skipna,
-                                                          level,
-                                                          **kwargs))
+        mapped = df._map_partitions(lambda df: df.all(axis,
+                                                      bool_only,
+                                                      skipna,
+                                                      level,
+                                                      **kwargs))
         return to_pandas(mapped)
 
     def any(self, axis=None, bool_only=None, skipna=None, level=None,
@@ -725,11 +753,11 @@ class DataFrame(object):
         else:
             df = self
 
-        mapped = df._map_row_partitions(lambda df: df.any(axis,
-                                                          bool_only,
-                                                          skipna,
-                                                          level,
-                                                          **kwargs))
+        mapped = df._map_partitions(lambda df: df.any(axis,
+                                                      bool_only,
+                                                      skipna,
+                                                      level,
+                                                      **kwargs))
         return to_pandas(mapped)
 
     def append(self, other, ignore_index=False, verify_integrity=False):
@@ -890,7 +918,7 @@ class DataFrame(object):
                             axis=axis,
                             level=level,
                             numeric_only=numeric_only),
-                        index=temp_index)._row_partitions))
+                        index=temp_index)))
             return collapsed_df
 
     def cov(self, min_periods=None):
@@ -1020,7 +1048,7 @@ class DataFrame(object):
         try:
             if not is_axis_zero or columns is not None:
                 values = labels if labels else columns
-                new_df = new_df._map_row_partitions(
+                new_df = new_df._map_partitions(
                     lambda df: df.drop(
                         values, axis=1, level=level, errors='ignore')
                 )
@@ -1034,7 +1062,7 @@ class DataFrame(object):
 
         if inplace:
             self._update_inplace(
-                df=new_df._row_partitions,
+                row_partitions=new_df._row_partitions,
                 index=new_df.index,
                 columns=new_df.columns
             )
@@ -1135,8 +1163,8 @@ class DataFrame(object):
             ndarray, numeric scalar, DataFrame, Series
         """
         inplace = validate_bool_kwarg(inplace, "inplace")
-        new_df = self._map_row_partitions(lambda df: df.eval(expr,
-                                          inplace=False, **kwargs))
+        new_df = self._map_partitions(lambda df: df.eval(expr,
+                                      inplace=False, **kwargs))
         new_df.columns = new_df.columns.insert(self.columns.size, 'e')
         if inplace:
             # TODO: return ray series instead of ray df
@@ -1288,7 +1316,7 @@ class DataFrame(object):
 
         if inplace:
             self._update_inplace(
-                df=new_df._row_partitions,
+                row_partitions=new_df._row_partitions,
                 columns=new_df.columns,
                 index=new_df.index
             )
@@ -1365,7 +1393,7 @@ class DataFrame(object):
             value (type of items contained in object) : A value that is
             stored at the key
         """
-        temp_df = self._map_row_partitions(
+        temp_df = self._map_partitions(
             lambda df: df.get(key, default=default))
         return to_pandas(temp_df)
 
@@ -1466,7 +1494,7 @@ class DataFrame(object):
                 # TODO Give a more accurate error to Pandas
                 raise TypeError("bad operand type for abs():", "str")
         if axis == 1:
-            return to_pandas(self._map_row_partitions(
+            return to_pandas(self._map_partitions(
                 lambda df: df.idxmax(axis=axis, skipna=skipna)))
         else:
             return self.T.idxmax(axis=1, skipna=skipna)
@@ -1487,7 +1515,7 @@ class DataFrame(object):
                 # TODO Give a more accurate error to Pandas
                 raise TypeError("bad operand type for abs():", "str")
         if axis == 1:
-            return to_pandas(self._map_row_partitions(
+            return to_pandas(self._map_partitions(
                 lambda df: df.idxmin(axis=axis, skipna=skipna)))
         else:
             return self.T.idxmin(axis=1, skipna=skipna)
@@ -1715,8 +1743,8 @@ class DataFrame(object):
         Returns:
             The max of the DataFrame.
         """
-        if(axis == 1):
-            return self._map_row_partitions(
+        if axis == 1:
+            return self._map_partitions(
                 lambda df: df.max(axis=axis, skipna=skipna, level=level,
                                   numeric_only=numeric_only, **kwargs))
         else:
@@ -1765,8 +1793,8 @@ class DataFrame(object):
         Returns:
             The min of the DataFrame.
         """
-        if(axis == 1):
-            return self._map_row_partitions(
+        if axis == 1:
+            return self._map_partitions(
                 lambda df: df.min(axis=axis, skipna=skipna, level=level,
                                   numeric_only=numeric_only, **kwargs))
         else:
@@ -1813,7 +1841,7 @@ class DataFrame(object):
             Boolean DataFrame where value is False if corresponding
             value is NaN, True otherwise
         """
-        return self._map_row_partitions(lambda df: df.notna())
+        return self._map_partitions(lambda df: df.notna())
 
     def notnull(self):
         """Perform notnull across the DataFrame.
@@ -1825,7 +1853,7 @@ class DataFrame(object):
             Boolean DataFrame where value is False if corresponding
             value is NaN, True otherwise
         """
-        return self._map_row_partitions(lambda df: df.notnull())
+        return self._map_partitions(lambda df: df.notnull())
 
     def nsmallest(self, n, columns, keep='first'):
         raise NotImplementedError(
@@ -1881,10 +1909,10 @@ class DataFrame(object):
             A Series containing the popped values. Also modifies this
             DataFrame.
         """
-        popped = to_pandas(self._map_row_partitions(
+        popped = to_pandas(self._map_partitions(
             lambda df: df.pop(item)))
         self._row_partitions = self._map_row_partitions(
-            lambda df: df.drop([item], axis=1))._row_partitions
+            lambda df: df.drop([item], axis=1))
         self.columns = self.columns.drop(item)
         return popped
 
@@ -1921,7 +1949,7 @@ class DataFrame(object):
                                        part) for part in self._row_partitions]
 
         if inplace:
-            self._update_inplace(new_dfs)
+            self._update_inplace(row_partitions=new_dfs)
         else:
             return DataFrame(row_partitions=new_dfs, columns=self.columns)
 
@@ -1997,7 +2025,7 @@ class DataFrame(object):
 
         if inplace:
             self._update_inplace(
-                df=new_df._df,
+                row_partitions=new_df._row_partitions,
                 columns=new_df.columns,
                 index=new_df.index
             )
@@ -2179,9 +2207,9 @@ class DataFrame(object):
             "github.com/ray-project/ray.")
 
     def round(self, decimals=0, *args, **kwargs):
-        return self._map_row_partitions(lambda df: df.round(decimals=decimals,
-                                                            *args,
-                                                            **kwargs))
+        return self._map_partitions(lambda df: df.round(decimals=decimals,
+                                                        *args,
+                                                        **kwargs))
 
     def rpow(self, other, axis='columns', level=None, fill_value=None):
         raise NotImplementedError(
@@ -2666,7 +2694,7 @@ class DataFrame(object):
         Returns:
             A Pandas Series representing the value fo the column.
         """
-        result_column_chunks = self._map_row_partitions(
+        result_column_chunks = self._map_partitions(
             lambda df: df.__getitem__(key))
         return to_pandas(result_column_chunks)
 
@@ -2771,7 +2799,7 @@ class DataFrame(object):
             df.__delitem__(key)
             return df
         self._row_partitions = \
-            self._map_row_partitions(del_helper)._row_partitions
+            self._map_row_partitions(del_helper)
         self.columns = self.columns.drop(key)
 
     def __finalize__(self, other, method=None, **kwargs):
@@ -2907,7 +2935,7 @@ class DataFrame(object):
                 raise TypeError("Unary negative expects numeric dtype, not {}"
                                 .format(t))
 
-        return self._map_row_partitions(lambda df: df.__neg__())
+        return self._map_partitions(lambda df: df.__neg__())
 
     def __floordiv__(self, other):
         raise NotImplementedError(

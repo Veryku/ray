@@ -597,13 +597,20 @@ class DataFrame(object):
         # TODO: We don't support `level` right now, so df.sum always returns a pd.Series
         #       Generalize when we support MultiIndexes, and distributed Series (?)
         if axis == 1:
-            return self._map_partitions(
-                    lambda df: df.sum(axis=axis,
-                                      skipna=skipna,
-                                      level=level,
-                                      numeric_only=numeric_only).to_frame(),
-                    axis=0,
-                    columns=pd.Index([0]))
+             return pd.concat(
+                     ray.get(
+                         self._map_row_partitions(
+                             lambda df: df.sum(axis=axis,
+                                               skipna=skipna,
+                                               level=level,
+                                               numeric_only=numeric_only))))
+        #     return self._map_partitions(
+        #             lambda df: df.sum(axis=axis,
+        #                               skipna=skipna,
+        #                               level=level,
+        #                               numeric_only=numeric_only).to_frame(),
+        #             axis=0,
+        #             columns=pd.Index([0]))
 
         # TODO: It's probably faster to do a _map_cols_partition instead of a transpose
         elif axis == 0 or axis is None:

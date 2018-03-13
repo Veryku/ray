@@ -23,6 +23,7 @@ from .utils import (
     _get_widths,
     _local_groupby,
     _deploy_func,
+    _partition_pandas_dataframe,
     to_pandas,
     _rebuild_cols,
     _rebuild_rows,
@@ -70,7 +71,7 @@ class DataFrame(object):
         if col_partitions is None:
             col_partitions = _rebuild_cols.remote(row_partitions, index, columns)
         if row_partitions is None:
-            row_partitions = _rebuild_rows.remote(col_partitions, index)
+            row_partitions = _rebuild_rows.remote(col_partitions, index, columns)
 
         self._col_partitions = col_partitions
         self._row_partitions = row_partitions

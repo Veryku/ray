@@ -63,7 +63,7 @@ class DataFrame(object):
         if col_partitions is None:
             col_partitions = _rebuild_cols.remote(row_partitions, index, columns)
         if row_partitions is None:
-            row_partitions = _rebuild_rows.remote(col_partitions, index)
+            row_partitions = _rebuild_rows.remote(col_partitions, index, columns)
 
         self._col_partitions = col_partitions
         self._row_partitions = row_partitions
@@ -3177,16 +3177,39 @@ def _rebuild_cols(row_partitions, index, columns):
 
 
 @ray.remote
-def _rebuild_rows(col_partitions):
+def _rebuild_rows(col_partitions, index, columns):
     """Rebuild the row partitions from the column partitions.
 
     Args:
         col_partitions ([ObjectID]): List of col partitions for the dataframe.
+        index (pd.Index): The row index of the entire dataframe.
+        columns (pd.Index): The column labels of the entire dataframe.
 
     Returns:
         [ObjectID]: List of new row Partitions.
     """
-    return []
+    partition_assignments = assign_partitions.remote(index,
+                                                     len(col_partitions))
+    shufflers = [ShuffleActor.remote(x, partition_axis=1, shuffle_axis=0)
+                 for x in col_partitions]
+
+    shufflers_done = \
+        [shufflers[i].shuffle.remote(
+            index,
+            partition_assignments,
+            i,
+            *shufflers)
+         for i in range(len(shufflers))]
+
+    # Block on all shuffles being complete
+    ray.get(shufflers_done)
+
+    # TODO: Determine if this is the right place to reset the index
+    def fix_indexes(df):
+        df.columns = columns
+        return df.reset_index(drop=True)
+
+    return [shuffler.apply_func.remote(fix_indexes) for shuffler in shufflers]
 
 
 @ray.remote(num_return_vals=2)

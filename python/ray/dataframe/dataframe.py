@@ -2801,7 +2801,7 @@ class DataFrame(object):
 
     def __delitem__(self, key):
         """Delete an item by key. `del a[key]` for example.
-           Operation happnes in place.
+           Operation happens in place.
 
         Args:
             key: key to delete
@@ -2809,8 +2809,14 @@ class DataFrame(object):
         def del_helper(df):
             df.__delitem__(key)
             return df
-        self._row_partitions = \
-            self._map_row_partitions(del_helper)
+        self._row_partitions = _map_partitions(del_helper, self._row_partitions)
+
+        # TODO: See if this is faster than just:
+        # self._col_partitions = _map_partitions(del_helper, self._col_partitions)
+        col_parts_to_del = self._col_index.loc[key, 'partition'].unique()
+        for i in col_parts_to_del:
+            self._col_partitions[i] = _deploy_func.remote(del_helper, self._col_partitions[i])
+ 
         self.columns = self.columns.drop(key)
 
     def __finalize__(self, other, method=None, **kwargs):

@@ -2813,7 +2813,8 @@ class DataFrame(object):
 
         # TODO: See if this is faster than just:
         # self._col_partitions = _map_partitions(del_helper, self._col_partitions)
-        col_parts_to_del = self._col_index.loc[key, 'partition'].unique()
+        # Cast cols as pd.Series as duplicate columns mean result may be np.int64 or pd.Series
+        col_parts_to_del = pd.Series(self._col_index.loc[key, 'partition']).unique()
         for i in col_parts_to_del:
             self._col_partitions[i] = _deploy_func.remote(del_helper, self._col_partitions[i])
  

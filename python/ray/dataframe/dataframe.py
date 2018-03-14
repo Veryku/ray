@@ -705,41 +705,47 @@ class DataFrame(object):
             If axis=None or axis=0, this call applies df.all(axis=1)
             to the transpose of df.
         """
-        # TODO: Reimplement this
-        # if axis is None or axis == 0:
-        #     df = self.T
-        #     axis = 1
-        # else:
-        #     df = self
-        # 
-        # new_rows = df._map_partitions(lambda df: df.all(axis,
-        #                                                 bool_only,
-        #                                                 skipna,
-        #                                                 level,
-        #                                                 **kwargs))
-        # return to_pandas(mapped)
+        partitions, res_index = (self._row_partitions, self._row_index) \
+                if axis == 1 else (self._col_partitions, self._col_index)
+
+        # Copy index to prevent read-only error
+        part_range_indexes = res_index.copy().groupby('partition')
+        part_indexes = [grp.index for _, grp in sorted(part_range_indexes, key=lambda x:x[0])]
+
+        # NOTE: Reexamine performance consequences of this
+        def index_all(df, idx):
+            if axis == 1:
+                df.index = idx
+            else:
+                df.columns = idx
+            return df.all(axis, bool_only, skipna, level, **kwargs)
+
+        return pd.concat(ray.get(_map_partitions(index_all, partitions, part_indexes)))
 
     def any(self, axis=None, bool_only=None, skipna=None, level=None,
             **kwargs):
-        """Return whether all elements are True over requested axis
+        """Return whether any elements are True over requested axis
 
         Note:
-            If axis=None or axis=0, this call applies df.all(axis=1)
-            to the transpose of df.
+            If axis=None or axis=0, this call applies on the column partitions,
+            otherwise operates on row partitions
         """
-        # TODO: Reimplement this
-        # if axis is None or axis == 0:
-        #     df = self.T
-        #     axis = 1
-        # else:
-        #     df = self
-        # 
-        # mapped = df._map_partitions(lambda df: df.any(axis,
-        #                                               bool_only,
-        #                                               skipna,
-        #                                               level,
-        #                                               **kwargs))
-        # return to_pandas(mapped)
+        partitions, res_index = (self._row_partitions, self._row_index) \
+                if axis == 1 else (self._col_partitions, self._col_index)
+
+        # Copy index to prevent read-only error
+        part_range_indexes = res_index.copy().groupby('partition')
+        part_indexes = [grp.index for _, grp in sorted(part_range_indexes, key=lambda x:x[0])]
+
+        # NOTE: Reexamine performance consequences of this
+        def index_any(df, idx):
+            if axis == 1:
+                df.index = idx
+            else:
+                df.columns = idx
+            return df.any(axis, bool_only, skipna, level, **kwargs)
+
+        return pd.concat(ray.get(_map_partitions(index_any, partitions, part_indexes)))
 
     def append(self, other, ignore_index=False, verify_integrity=False):
         raise NotImplementedError(

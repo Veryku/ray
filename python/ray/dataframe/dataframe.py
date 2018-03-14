@@ -705,22 +705,27 @@ class DataFrame(object):
             If axis=None or axis=0, this call applies df.all(axis=1)
             to the transpose of df.
         """
-        partitions, res_index = (self._row_partitions, self._row_index) \
-                if axis == 1 else (self._col_partitions, self._col_index)
+        # Use .copy() to prevent read-only error
+        partitions, res_index = (self._row_partitions, self._row_index.copy()) \
+                if axis == 1 else (self._col_partitions, self._col_index.copy())
 
-        # Copy index to prevent read-only error
-        part_range_indexes = res_index.copy().groupby('partition')
-        part_indexes = [grp.index for _, grp in sorted(part_range_indexes, key=lambda x:x[0])]
+        series = ray.get(
+                    _map_partitions(
+                        lambda df: df.all(axis, bool_only, skipna, level, **kwargs),
+                        partitions))
 
-        # NOTE: Reexamine performance consequences of this
-        def index_all(df, idx):
-            if axis == 1:
-                df.index = idx
-            else:
-                df.columns = idx
-            return df.all(axis, bool_only, skipna, level, **kwargs)
+        def indexify(i, s):
+            df = s.to_frame()
+            df['partition'] = i
+            df['index_within_partition'] = df.index
+            return df.set_index(['partition', 'index_within_partition'])
 
-        return pd.concat(ray.get(_map_partitions(index_all, partitions, part_indexes)))
+        indexed_series = pd.concat([indexify(i, s) for i, s in enumerate(series)])
+        joined = indexed_series.merge(res_index,
+                                      left_index=True,
+                                      right_on=['partition', 'index_within_partition'])
+
+        return joined.loc[:,0].rename(None)
 
     def any(self, axis=None, bool_only=None, skipna=None, level=None,
             **kwargs):
@@ -730,22 +735,27 @@ class DataFrame(object):
             If axis=None or axis=0, this call applies on the column partitions,
             otherwise operates on row partitions
         """
-        partitions, res_index = (self._row_partitions, self._row_index) \
-                if axis == 1 else (self._col_partitions, self._col_index)
+        # Use .copy() to prevent read-only error
+        partitions, res_index = (self._row_partitions, self._row_index.copy()) \
+                if axis == 1 else (self._col_partitions, self._col_index.copy())
 
-        # Copy index to prevent read-only error
-        part_range_indexes = res_index.copy().groupby('partition')
-        part_indexes = [grp.index for _, grp in sorted(part_range_indexes, key=lambda x:x[0])]
+        series = ray.get(
+                    _map_partitions(
+                        lambda df: df.any(axis, bool_only, skipna, level, **kwargs),
+                        partitions))
 
-        # NOTE: Reexamine performance consequences of this
-        def index_any(df, idx):
-            if axis == 1:
-                df.index = idx
-            else:
-                df.columns = idx
-            return df.any(axis, bool_only, skipna, level, **kwargs)
+        def indexify(i, s):
+            df = s.to_frame()
+            df['partition'] = i
+            df['index_within_partition'] = df.index
+            return df.set_index(['partition', 'index_within_partition'])
 
-        return pd.concat(ray.get(_map_partitions(index_any, partitions, part_indexes)))
+        indexed_series = pd.concat([indexify(i, s) for i, s in enumerate(series)])
+        joined = indexed_series.merge(res_index,
+                                      left_index=True,
+                                      right_on=['partition', 'index_within_partition'])
+
+        return joined.loc[:,0].rename(None)
 
     def append(self, other, ignore_index=False, verify_integrity=False):
         raise NotImplementedError(

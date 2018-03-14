@@ -2817,8 +2817,8 @@ class DataFrame(object):
         col_parts_to_del = pd.Series(self._col_index.loc[key, 'partition']).unique()
         for i in col_parts_to_del:
             self._col_partitions[i] = _deploy_func.remote(del_helper, self._col_partitions[i])
- 
-        self.columns = self.columns.drop(key)
+
+        self._col_index = self._col_index.drop(key)
 
     def __finalize__(self, other, method=None, **kwargs):
         raise NotImplementedError(

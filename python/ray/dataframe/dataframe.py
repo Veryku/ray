@@ -389,9 +389,9 @@ class DataFrame(object):
     def _update_inplace(self, row_partitions=None, col_partitions=None,
                         columns=None, index=None):
         """Updates the current DataFrame inplace. Behavior should be similar to the constructor,
-        given the corresponding arguments. Note that len(columns) and len(index) should match
+        given the corresponding arguments. Note that len(columns) and len(index) *must* match
         the corresponding dimensions in the partition(s) passed in, otherwise this function will
-        complain.
+        leave the dataframe in an inconsistent state.
 
         Args:
             row_partitions ([ObjectID]):
@@ -439,20 +439,22 @@ class DataFrame(object):
             new_col_lengths, new_col_index = \
                 _compute_width_and_index.remote(self._col_partitions)
 
-        # Perform rollback if length mismatch, since operations occur inplace here
-        # Since we want to keep the existing DF in a usable state, we need to carefully catch
-        # and handle this error
-        if index is not None and len(index) != len(new_row_index):
-            self._row_partitions = old_row_parts
-            self._col_partitions = old_col_parts
-            raise ValueError("Length mismatch between `index` and new row index.", \
-                             "Expected: {0}, Got: {1}".format(len(new_row_index), len(index)))
+        # NOTE: Error checking here requires a ray.get, and is too expensive for now. It's
+        #       on the callers of this function to ensure that erroneous state isn't received
+        # # Perform rollback if length mismatch, since operations occur inplace here
+        # # Since we want to keep the existing DF in a usable state, we need to carefully catch
+        # # and handle this error
+        # if index is not None and len(index) != len(ray.get(new_row_index)):
+        #     self._row_partitions = old_row_parts
+        #     self._col_partitions = old_col_parts
+        #     raise ValueError("Length mismatch between `index` and new row index.", \
+        #                      "Expected: {0}, Got: {1}".format(len(new_row_index), len(index)))
 
-        if columns is not None and len(columns) != len(new_col_index):
-            self._row_partitions = old_row_parts
-            self._col_partitions = old_col_parts
-            raise ValueError("Length mismatch between `columns` and new column index.", \
-                             "Expected: {0}, Got: {1}".format(len(new_col_index), len(columns)))
+        # if columns is not None and len(columns) != len(ray.get(new_col_index)):
+        #     self._row_partitions = old_row_parts
+        #     self._col_partitions = old_col_parts
+        #     raise ValueError("Length mismatch between `columns` and new column index.", \
+        #                      "Expected: {0}, Got: {1}".format(len(new_col_index), len(columns)))
 
         self._row_lengths, self._row_index = new_row_lengths, new_row_index
         self._col_lengths, self._col_index = new_col_lengths, new_col_index

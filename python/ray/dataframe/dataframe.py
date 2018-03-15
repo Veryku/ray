@@ -1611,13 +1611,25 @@ class DataFrame(object):
             raise ValueError(
                 "Column {} already exists in DataFrame.".format(column))
 
-        cumulative = np.cumsum(self._row_lengths)
-        partitions = [value[cumulative[i-1]:cumulative[i]]
-                      for i in range(len(cumulative))
-                      if i != 0]
+        # Perform insert on a specific column partition
+        # Determine which column partition to place it in, and where in that partition
+        col_cum_lens = np.cumsum(self._col_lengths)
+        col_part_idx = np.digitize(loc, col_cum_lens[:-1])
+        col_part_loc = loc - np.asscalar(np.concatenate(([0], col_cum_lens))[col_part_idx])
 
-        partitions.insert(0, value[:cumulative[0]])
+        # Deploy insert function to specific column partition, and replace that column
+        def insert_col_part(df):
+            df.insert(col_part_loc, column, value, allow_duplicates)
+            return df
 
+        self._col_partitions[col_part_idx] = \
+                _deploy_func.remote(insert_col_part, self._col_partitions[col_part_idx])
+
+        cumulative = np.concatenate(([0], np.cumsum(self._row_lengths)))
+        partitions = [value[cumulative[i]:cumulative[i+1]] for i in range(len(cumulative) - 1)]
+
+        # Perform insert on each row, with it's respective values
+        # TODO: Determine if we're better off shuffle-rebuilding (I don't think so?)
         # Because insert is always inplace, we have to create this temp fn.
         def _insert(_df, _loc, _column, _part, _allow_duplicates):
             _df.insert(_loc, _column, _part, _allow_duplicates)
@@ -1632,7 +1644,26 @@ class DataFrame(object):
                                  allow_duplicates)
              for i in range(len(self._row_partitions))]
 
-        self.columns = self.columns.insert(loc, column)
+        # Generate new column index
+        new_col_index = self.columns.insert(loc, column)
+
+        # Shift indices in partition where we inserted column
+        col_idx_rows = (self._col_index.partition == col_part_idx) & \
+                       (self._col_index.index_within_partition >= col_part_loc)
+        # TODO: Determine why self._col_index{_cache} are read-only
+        _col_index_copy = self._col_index.copy()
+        _col_index_copy.loc[col_idx_rows, 'index_within_partition'] += 1
+
+        # TODO: Determine if there's a better way to do a row-index insert in pandas,
+        #       because this is very annoying/unsure of efficiency
+        # Create new RangeIndex entry to insert
+        col_index_to_insert = pd.DataFrame({'partition': col_part_idx,
+                                            'index_within_partition': col_part_loc},
+                                           index=[column])
+
+        # Insert into cached RangeIndex, and order by new column index
+        self._col_index = _col_index_copy.append(col_index_to_insert).loc[new_col_index]
+
 
     def interpolate(self, method='linear', axis=0, limit=None, inplace=False,
                     limit_direction='forward', downcast=None, **kwargs):

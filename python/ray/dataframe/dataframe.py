@@ -388,30 +388,77 @@ class DataFrame(object):
 
     def _update_inplace(self, row_partitions=None, col_partitions=None,
                         columns=None, index=None):
-        """Updates the current DataFrame inplace
+        """Updates the current DataFrame inplace. Behavior should be similar to the constructor,
+        given the corresponding arguments. Note that len(columns) and len(index) should match
+        the corresponding dimensions in the partition(s) passed in, otherwise this function will
+        complain.
+
+        Args:
+            row_partitions ([ObjectID]):
+                The new partitions to replace self._row_partitions directly
+            col_partitions ([ObjectID]):
+                The new partitions to replace self._col_partitions directly
+            columns (pd.Index):
+                Index of the column dimension to replace existing columns
+            index (pd.Index):
+                Index of the row dimension to replace existing index
+
+        Note:
+            If `columns` or `index` are not supplied, they will revert to default columns or
+            index respectively, as this function does not have enough contextual info to rebuild
+            the indexes correctly based on the addition/subtraction of rows/columns.
         """
+        # Store old partition lists in case of length mismatch failures (should never happen!)
+        old_row_parts, old_col_parts = self._row_partitions, self._col_partitions
+        new_row_lengths, new_row_index = self._row_lengths, self._row_index
+        new_col_lengths, new_col_index = self._col_lengths, self._col_index
+
         if row_partitions is not None and col_partitions is not None:
+            # Update both partition lists with corresponding data
             self._row_partitions = row_partitions
             self._col_partitions = col_partitions
 
         if row_partitions is not None:
+            # Update row partitions, reconstruct columns
             self._row_partitions = row_partitions
             self._col_partitions = _rebuild_cols.remote(self._row_partitions,
                                                         index,
                                                         columns)
 
         if col_partitions is not None:
+            # Update column partitions, reconstruct rows
             self._col_partitions = col_partitions
             self._row_partitions = _rebuild_rows.remote(self._col_partitions,
-                                                        index)
+                                                        index,
+                                                        columns)
+
+        if row_partitions is not None or col_partitions is not None:
+            # At least one partition list is being updated, so recompute indexes
+            new_row_lengths, new_row_index = \
+                _compute_length_and_index.remote(self._row_partitions)
+            new_col_lengths, new_col_index = \
+                _compute_width_and_index.remote(self._col_partitions)
+
+        # Perform rollback if length mismatch, since operations occur inplace here
+        # Since we want to keep the existing DF in a usable state, we need to carefully catch
+        # and handle this error
+        if index is not None and len(index) != len(new_row_index):
+            self._row_partitions = old_row_parts
+            self._col_partitions = old_col_parts
+            raise ValueError("Length mismatch between `index` and new row index.", \
+                             "Expected: {0}, Got: {1}".format(len(new_row_index), len(index)))
+
+        if columns is not None and len(columns) != len(new_col_index):
+            self._row_partitions = old_row_parts
+            self._col_partitions = old_col_parts
+            raise ValueError("Length mismatch between `columns` and new column index.", \
+                             "Expected: {0}, Got: {1}".format(len(new_col_index), len(columns)))
+
+        self._row_lengths, self._row_index = new_row_lengths, new_row_index
+        self._col_lengths, self._col_index = new_col_lengths, new_col_index
 
         if columns is not None:
             self.columns = columns
-
-        self._row_lengths, self._row_index = \
-            _compute_length_and_index.remote(self._row_partitions)
-        self._col_lengths, self._col_index = \
-            _compute_width_and_index.remote(self._col_partitions)
 
         if index is not None:
             self.index = index

@@ -1,6 +1,6 @@
 import pandas as pd
 
-class IndexDF(object):
+class CoordDF(object):
     """Wrapper for Pandas indexes in Ray DataFrames. Handles all of the annoying
     metadata specific to the axis of partition (setting indexes, calculating the
     index within partition of a value, etc.) since the dataframe may be
@@ -8,17 +8,21 @@ class IndexDF(object):
     operations over one axis-agnostic interface.
     """
 
-    def __init__(self, coord_df=None, index=None):
-        self._coord_df = None
+    def __init__(self, coord_df=None, lengths=None):
+        self._coord_df = coord_df
+        self._lengths = lengths
 
-        if partition_df is not None:
-            self._coord_df = coord_df
-        elif index is not None:
-            # NOTE: We decided to make an empty dataframe (pd.DataFrame(index=pd.RangeIndex(...)))
-            # TODO: Decide whether to create a dummy partition_df or an ad-hoc
-            #       impl for non-partitioned axis indexes (i.e. col index when
-            #       row partitioned)
-            pass
+    ### Getters and Setters for Properties ###
+
+    def _get__coord_df(self):
+        if isinstance(self._coord_df_cache, ray.local_scheduler.ObjectID):
+            self._coord_df_cache = ray.get(self._coord_df_cache)
+        return self._coord_df_cache
+
+    def _set__coord_df(self, coord_df):
+        self._coord_df_cache = coord_df
+
+    _coord_df = property(_get__coord_df, _set__coord_df)
 
     def _get_index(self):
         """Get the index wrapped by this IndexDF.
@@ -26,7 +30,7 @@ class IndexDF(object):
         Returns:
             The index wrapped by this IndexDF
         """
-        return None
+        return self._coord_df.index
 
     def _set_index(self, new_index):
         """Set the index wrapped by this IndexDF.
@@ -34,9 +38,23 @@ class IndexDF(object):
         Args:
             new_index: The new index to wrap
         """
-        pass
+        self._coord_df.index = new_index
 
     index = property(_get_index, _set_index)
+
+    def _get__lengths(self):
+        if isinstance(self._lengths_cache, ray.local_scheduler.ObjectID) or \
+                (isinstance(self._lengths_cache, list) and \
+                 isinstance(self._lengths_cache[0], ray.local_scheduler.ObjectID)):
+            self._lengths_cache = ray.get(self._lengths_cache)
+        return self._lengths_cache
+
+    def _set__lengths(self, lengths):
+        self._lengths_cache = lengths
+
+    _lengths = property(_get__lengths, _set__lengths)
+
+    ### Accessor Methods ###
 
     def coords_of(self, key):
         """Returns the coordinates (partition, index_within_partition) of the
@@ -51,14 +69,49 @@ class IndexDF(object):
             `index_within_partition`, and if key is a slice it will be a
             pd.DataFrame with said items as columns.
         """
-        # TODO: Decide whether to create a dummy partition_df or an ad-hoc
-        #       impl for non-partitioned axis indexes (i.e. col index when
-        #       row partitioned)
-        pass
+        return self._coord_df.loc[key]
 
     def __getitem__(self, key):
         return self.coords_of(key)
-    
+
+    ### Modifier Methods ###
+
+    def insert(self, key, loc=None, partition=None, index_within_partition=None):
+        # Perform insert on a specific partition
+        # Determine which partition to place it in, and where in that partition
+        if loc is not None:
+            cum_lens = np.cumsum(self._lengths)
+            partition = np.digitize(loc, cum_lens)
+            if partition >= len(cum_lens):
+                if loc > cum_lens[-1]:
+                    raise IndexError("index {0} is out of bounds".format(loc))
+                else:
+                    index_within_partition = self._lengths[-1]
+            else:
+                index_within_partition = loc - np.asscalar(np.concatenate(([0], cum_lens))[partition])
+
+        result = self._coord_df.copy()
+
+        # Generate new index
+        new_index = self.index.insert(loc, key)
+
+        # Shift indices in partition where we inserted column
+        idx_locs = (self._coord_df.partition == partition) & \
+                   (self._coord_df.index_within_partition == index_within_partition) 
+        # TODO: Determine why self._coord_df{,_cache} are read-only
+        _coord_df_copy = self._coord_df.copy()
+        _coord_df_copy.loc[idx_locs, 'index_within_partition'] += 1
+
+        # TODO: Determine if there's a better way to do a row-index insert in pandas,
+        #       because this is very annoying/unsure of efficiency
+        # Create new coord entry to insert
+        coord_to_insert = pd.DataFrame({'partition': partition,
+                                        'index_within_partition': index_within_partition},
+                                       index=[key])
+
+        # Insert into cached RangeIndex, and order by new column index
+        self._coord_df = _coord_df_copy.append(coord_to_insert).loc[new_index]
+   
     ### Factory Methods ###
     
     def from_index(index):
@@ -70,23 +123,29 @@ class IndexDF(object):
         Returns: 
             An IndexDF backed by the specified pd.Index, with dummy partition data (?)
         """
-        return None
+        # NOTE: We decided to make an empty dataframe (pd.DataFrame(index=pd.RangeIndex(...)))
+        dummy_coord_df = pd.DataFrame(index=index)
+        dummy_lengths = [len(index)]
+        return CoordDF(dummy_coord_df, dummy_lengths)
 
     from_index = staticmethod(from_index)
 
-    def from_partitions(dfs, index=None):
+    def from_partitions(dfs, index=None, axis=0):
         """Defines an IndexDF from Ray DataFrame partitions
         
         Args:
             dfs ([ObjectID]): ObjectIDs of dataframe partitions
             index (pd.Index): Index of the Ray DataFrame.
+            axis: Axis of partition (0=row partitions, 1=column partitions)
 
         Returns: 
             An IndexDF backed by the specified pd.Index, partitioned off specified partitions
         """
         # NOTE: We should call this instead of manually calling _compute_lengths_and_index in
         #       the dataframe constructor
-        return None
+        # TODO: Make it work for axis=1 as well
+        lengths_oid, coord_df_oid = _compute_lengths_and_index(dfs, index)
+        return CoordDF(coord_df_oid, lengths_oid)
 
     from_partitions = staticmethod(from_partitions)
 

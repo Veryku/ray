@@ -62,7 +62,9 @@ class CoordDFBase(object):
         raise NotImplementedError()
 
     def drop(labels, errors='raise'):
-        raise NotImplementedError()
+        dropped = self.coords_of(labels)
+        self._coord_df.drop(labels, errors=errors, inplace=True)
+        return dropped
 
     def rename_index(self, mapper):
         raise NotImplementedError()
@@ -162,8 +164,8 @@ class CoordDF(CoordDFBase):
         # Insert into cached RangeIndex, and order by new column index
         self._coord_df = _coord_df_copy.append(coord_to_insert).loc[new_index]
 
-    def drop(labels, errors='raise'):
-        self._coord_df.drop(values, errors=errors, inplace=True)
+        # Return inserted coordinate for callee
+        return coord_to_insert
 
     def rename_index(self, mapper):
         self._coord_df.rename_axis(mapper, axis=0, inplace=True)
@@ -218,9 +220,6 @@ class IndexCoordDF(CoordDFBase):
 
         # Make new empty coord_df
         self._coord_df = pd.DataFrame(index=new_index)
-
-    def drop(labels, errors='raise'):
-        self._coord_df.drop(values, errors=errors, inplace=True)
 
     def rename_index(self, mapper):
         self._coord_df.rename_axis(mapper, axis=0, inplace=True)

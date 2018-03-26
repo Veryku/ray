@@ -3,13 +3,17 @@ import numpy as np
 import ray
 
 class CoordDFBase(object):
-    """Wrapper for Pandas indexes in Ray DataFrames. Handles all of the annoying
-    metadata specific to the axis of partition (setting indexes, calculating the
-    index within partition of a value, etc.) since the dataframe may be
-    partitioned across either axis. This way we can unify the possible index
-    operations over one axis-agnostic interface.
+    """Wrapper for Pandas indexes in Ray DataFrames. Handles all of the
+    metadata specific to the axis of partition (setting indexes, 
+    calculating the index within partition of a value, etc.) since the 
+    dataframe may be partitioned across either axis. This way we can unify the
+    possible index  operations over one axis-agnostic interface.
 
-    IMPORTANT NOTE: Currently all operations are inplace.
+    This class is the abstract superclass for CoordDF and IndexCoordDF,
+    which handle indexes along the partitioned and non-partitioned
+    axes, respectively.
+
+    IMPORTANT NOTE: Currently all operations, as implemented, are inplace.
     """
     ### Getters and Setters for Properties ###
 
@@ -62,26 +66,52 @@ class CoordDFBase(object):
         raise NotImplementedError()
 
     def drop(labels, errors='raise'):
+        """Drop the specified labels from the CoordDF
+
+        Args:
+            labels (scalar or list-like): 
+                The labels to drop
+            errors ('raise' or 'ignore'): 
+                If 'ignore', suppress errors for when labels don't exist
+
+        Returns:
+            DataFrame with coordinates of dropped labels
+        """
         dropped = self.coords_of(labels)
         self._coord_df.drop(labels, errors=errors, inplace=True)
         return dropped
 
     def rename_index(self, mapper):
-        raise NotImplementedError()
+        """Rename the index.
+
+        Args:
+            mapper: name to rename the index as
+        """
+        self._coord_df.rename_axis(mapper, axis=0, inplace=True)
 
 class CoordDF(CoordDFBase):
-    """Wrapper for Pandas indexes in Ray DataFrames. Handles all of the annoying
-    metadata specific to the axis of partition (setting indexes, calculating the
-    index within partition of a value, etc.) since the dataframe may be
-    partitioned across either axis. This way we can unify the possible index
-    operations over one axis-agnostic interface.
-
-    IMPORTANT NOTE: Currently all operations are inplace.
+    """CoordDF implementation for index across a partitioned axis. This
+    implementation assumes the underlying index lies across multiple
+    partitions.
     """
 
-    def __init__(self, coord_df=None, lengths=None):
-        self._coord_df = coord_df
-        self._lengths = lengths
+    def __init__(self, dfs, index=None, axis=0):
+        """Inits a CoordDF from Ray DataFrame partitions
+        
+        Args:
+            dfs ([ObjectID]): ObjectIDs of dataframe partitions
+            index (pd.Index): Index of the Ray DataFrame.
+            axis: Axis of partition (0=row partitions, 1=column partitions)
+
+        Returns: 
+            A CoordDF backed by the specified pd.Index, partitioned off specified partitions
+        """
+        # NOTE: We should call this instead of manually calling _compute_lengths_and_index in
+        #       the dataframe constructor
+        # TODO: Make it work for axis=1 as well
+        lengths_oid, coord_df_oid = _compute_lengths_and_index(dfs, index)
+        self._coord_df = coord_df_oid
+        self._lengths = lengths_oid
 
     ### Getters and Setters for Properties ###
 
@@ -101,7 +131,8 @@ class CoordDF(CoordDFBase):
 
     def coords_of(self, key):
         """Returns the coordinates (partition, index_within_partition) of the
-        provided key in the index
+        provided key in the index. Can be called on its own or implicitly
+        through __getitem__
 
         Args:
             key: item to get coordinates of
@@ -114,11 +145,9 @@ class CoordDF(CoordDFBase):
         """
         return self._coord_df.loc[key]
 
-    def __getitem__(self, key):
-        return self.coords_of(key)
-
     def groupby(self, by=None, axis=0, level=None, as_index=True, sort=True,
                 group_keys=True, squeeze=False, **kwargs):
+        # TODO: Find out what this does, and write a docstring
         assignments_df = self._coord_df.groupby(by=by, axis=axis, level=level,
                                                 as_index=as_index, sort=sort,
                                                 group_keys=group_keys,
@@ -129,6 +158,19 @@ class CoordDF(CoordDFBase):
     ### Modifier Methods ###
 
     def insert(self, key, loc=None, partition=None, index_within_partition=None):
+        """Inserts a key at a certain location in the index, or a certain coord
+        in a partition. Called with either `loc` or `partition` and 
+        `index_within_partition`. If called with both, `loc` will be used.
+
+        Args:
+            key: item to insert into index
+            loc: location to insert into index
+            partition: partition to insert into
+            index_within_partition: index within partition to insert into
+
+        Returns:
+            DataFrame with coordinates of insert
+        """
         # Perform insert on a specific partition
         # Determine which partition to place it in, and where in that partition
         if loc is not None:
@@ -167,21 +209,23 @@ class CoordDF(CoordDFBase):
         # Return inserted coordinate for callee
         return coord_to_insert
 
-    def rename_index(self, mapper):
-        self._coord_df.rename_axis(mapper, axis=0, inplace=True)
-
 class IndexCoordDF(CoordDFBase):
-    """Wrapper for Pandas indexes in Ray DataFrames. Handles all of the annoying
-    metadata specific to the axis of partition (setting indexes, calculating the
-    index within partition of a value, etc.) since the dataframe may be
-    partitioned across either axis. This way we can unify the possible index
-    operations over one axis-agnostic interface.
-
-    IMPORTANT NOTE: Currently all operations are inplace.
+    """CoordDF implementation for index across a non-partitioned axis. This
+    implementation assumes the underlying index lies across one partition.
     """
 
     def __init__(self, index):
+        """Inits a CoordDF from Pandas Index only.
+        
+        Args:
+            index (pd.Index): Index to wrap.
+
+        Returns: 
+            A CoordDF backed by the specified pd.Index.
+        """
         self._coord_df = pd.DataFrame(index=index)
+        # Set _lengths as a dummy variable for future-proofing method inheritance
+        self._lengths = [len(index)]
 
     ### Accessor Methods ###
 
@@ -215,14 +259,28 @@ class IndexCoordDF(CoordDFBase):
     ### Modifier Methods ###
 
     def insert(self, key, loc=None, partition=None, index_within_partition=None):
+        """Inserts a key at a certain location in the index, or a certain coord
+        in a partition. Called with either `loc` or `partition` and 
+        `index_within_partition`. If called with both, `loc` will be used.
+
+        Args:
+            key: item to insert into index
+            loc: location to insert into index
+            partition: partition to insert into
+            index_within_partition: index within partition to insert into
+
+        Returns:
+            DataFrame with coordinates of insert
+        """
         # Generate new index
         new_index = self.index.insert(loc, key)
 
         # Make new empty coord_df
         self._coord_df = pd.DataFrame(index=new_index)
 
-    def rename_index(self, mapper):
-        self._coord_df.rename_axis(mapper, axis=0, inplace=True)
+        # Shouldn't really need this, but here to maintain API consistency
+        return pd.DataFrame({'partition': 0, 'index_within_partition': loc},
+                            index=[key])
 
 """
 1. Think about passing one of these objs when returning a new ray.DF with same indexes (think applymap).

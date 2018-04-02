@@ -2285,17 +2285,6 @@ class DataFrame(object):
             return new_df
 
     def rename_axis(self, mapper, axis=0, copy=True, inplace=False):
-        axes_is_columns = axis == 1 or axis == "columns"
-        renamed = self if inplace else self.copy()
-        if axes_is_columns:
-            renamed.columns.name = mapper
-        else:
-            renamed._row_index.rename_axis(mapper, axis=axis, copy=copy,
-                                           inplace=True)
-        if not inplace:
-            return renamed
-
-    def _set_axis_name(self, name, axis=0, inplace=False):
         """Alter the name or names of the axis.
 
         Args:
@@ -2306,14 +2295,12 @@ class DataFrame(object):
         Returns:
             Type of caller or None if inplace=True.
         """
-        # TODO: test after col_partitions rewrite 
         axes_is_columns = axis == 1 or axis == "columns"
         renamed = self if inplace else self.copy()
         if axes_is_columns:
-            renamed.columns.set_names(name)
+            renamed.columns.name = mapper
         else:
-            renamed._row_index.set_names(name)
-
+            renamed.index.name = mapper
         if not inplace:
             return renamed
 

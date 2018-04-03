@@ -1783,18 +1783,20 @@ class DataFrame(object):
         Returns:
             A generator that iterates over the columns of the frame.
         """
+
+        def update_items(series, i):
+            """Helper function to correct the columns + name of the Series."""
+            series.index = self.columns
+            series.name = list(self.index)[i]
+            return series
+
         iters = ray.get([_deploy_func.remote(
             lambda df: list(df.items()), part)
-            for part in self._row_partitions])
+            for part in self._col_partitions])
+        iters = itertools.chain.from_iterable(iters)
+        series = map(lambda s: update_items(s[1][1], s[0]), enumerate(iters))
 
-        def concat_iters(iterables):
-            for partitions in enumerate(zip(*iterables)):
-                series = pd.concat([_series for _, _series in partitions[1]])
-                series.index = self.index
-                series.name = list(self.columns)[partitions[0]]
-                yield (series.name, series)
-
-        return concat_iters(iters)
+        return zip(self.index, series)
 
     def iteritems(self):
         """Iterator over (column name, Series) pairs.
@@ -2582,7 +2584,7 @@ class DataFrame(object):
                 level = col
                 names.append(None)
             else:
-                level = frame[col]._values
+                level = frame[col]._values.copy()
                 names.append(col)
                 if drop:
                     to_remove.append(col)

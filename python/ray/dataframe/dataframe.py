@@ -28,6 +28,7 @@ import re
 from .utils import (
     _deploy_func,
     _map_partitions,
+    _map_partitions_coalesce,
     _partition_pandas_dataframe,
     to_pandas,
     _blocks_to_col,
@@ -327,9 +328,12 @@ class DataFrame(object):
         axis = pd.DataFrame()._get_axis_number(axis) if axis is not None \
             else 0
 
-        oid_series = ray.get(_map_partitions(remote_func,
-                             self._col_partitions if axis == 0
-                             else self._row_partitions))
+        ### EXPERIMENTAL ###
+        oid_series = ray.get(_map_partitions_coalesce(remote_func, self._block_partitions, axis))
+
+        # oid_series = ray.get(_map_partitions(remote_func,
+        #                      self._col_partitions if axis == 0
+        #                      else self._row_partitions))
 
         if axis == 0:
             # We use the index to get the internal index.
